@@ -213,3 +213,9 @@ def Manera10(self,dc,nu):
         q = self.bias_par['q']
         p = self.bias_par['p']
     return 1. + (q*nu**2.-1.)/dc + (2.*p/dc)/(1.+(q*nu**2.)**p)
+    
+def constant(self,dc,nu):
+    """
+    Returns a linear constant bias
+    """
+    return self.bias_par['b']*np.ones(len(nu))
