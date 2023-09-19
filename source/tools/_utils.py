@@ -150,14 +150,18 @@ def check_params(input_params, default_params):
         
         input_value = input_params[key]
         default_value = default_params[key]
-        
         # Check if input has the correct type
         if type(input_value)!=type(default_value):
             # Some inputs can have multiple types
             if key=='scatter_seed':
                 if type(input_value)==int or type(input_value)==float:
                     pass
-                
+            elif key=='v_of_M':
+                if callable(input_value):
+                    pass
+            elif key=='n_leggauss_nodes_FT' or key == 'n_leggauss_nodes_IFT':
+                if type(input_value)==int:
+                    pass
             elif type(default_value)==Quantity:
                 raise TypeError("Parameter "+key+
                         " must be an astropy quantity")
@@ -166,11 +170,13 @@ def check_params(input_params, default_params):
                                     str(type(default_value)))
             
         # If input is a quantity, check if it has the correct dimension
-        elif (type(default_value)==Quantity and not
+        if (type(default_value)==Quantity and not
                  input_value.unit.is_equivalent(default_value.unit)):
             
-            # Tmin/Tmax may be in either uK or Jy/sr depending on do_Jysr     
-            if key=='Tmin' or key=='Tmax':
+            # Tmin/Tmax (and related) may be in either uK or Jy/sr depending on do_Jysr
+            T_related_params = ['Tmin_VID','Tmax_VID','sigmaT_control']
+            fT_related_params = ['fT_min','fT_max','fT0_min','fT0_max']
+            if key in T_related_params:
                 if (input_params['do_Jysr'] and 
                    input_value.unit.is_equivalent(u.Jy/u.sr)):
                     pass
@@ -178,10 +184,18 @@ def check_params(input_params, default_params):
                     raise TypeError("Parameter "+key+
                                 " must have units equivalent to "
                                 +str(default_value.unit))
+            if key in fT_related_params:
+                if (input_params['do_Jysr'] and 
+                   input_value.unit.is_equivalent((u.Jy/u.sr)**-1)):
+                    pass
+                else:
+                    raise TypeError("Parameter "+key+
+                                " must have units equivalent to "
+                                +str(default_value.unit))
                                 
         # Special requirements for certain parameters
-        elif (key=='model_type' and not 
-                (input_value=='ML' or input_value=='LF' or input_value=='TOY')):
+        if (key=='model_type' and not 
+           (input_value=='ML' or input_value=='LF' or input_value=='TOY')):
             # model_type can only be ML or LF
             raise ValueError("model_type must be either 'ML' or 'LF' ot 'TOY' ")
             
