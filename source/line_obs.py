@@ -125,8 +125,9 @@ class LineObs(LineModel):
         Number of frequency channels, rounded if dnu does not divide evenly
         into Delta_nu
         '''
-        return np.round((self.Delta_nu/self.dnu).decompose())
-        
+        dnu_FWHM = self.dnu/0.4247
+        #return np.round((self.Delta_nu/self.dnu).decompose())
+        return np.round((self.Delta_nu/dnu_FWHM).decompose())
         
     @cached_obs_property
     def beam_width(self):
@@ -257,7 +258,8 @@ class LineObs(LineModel):
             return ((self.Tsys_NEFD/self.beam_FWHM**2)
                     .to(u.Jy*u.s**(1./2)/u.sr))
         else:
-            return ((self.Tsys_NEFD/np.sqrt(self.Nfeeds*self.dnu*self.tpix))
+            dnu_FWHM = self.dnu/0.4247
+            return ((self.Tsys_NEFD/np.sqrt(self.Nfeeds*dnu_FWHM*self.tpix))
                     .to(u.uK))
     
     
