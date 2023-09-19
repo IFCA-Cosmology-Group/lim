@@ -8,9 +8,13 @@ import astropy.units as u
 import astropy.constants as cu
 
 from scipy.interpolate import interp1d,RegularGridInterpolator
-from scipy.special import sici,erf,legendre,j1
+from scipy.special import sici,erf,legendre,j1,roots_legendre,dawsn
 from scipy.stats import poisson
-from scipy.fft import fft,ifft
+from scipy.integrate import quad,simps
+
+import finufft
+
+dawsn_over_x_non_divergent = lambda x:np.where(x!=0,dawsn(x)/x,1)
 
 try:
     import camb
@@ -26,10 +30,8 @@ if NoCamb and NoClass:
     raise ValueError('You need to have either camb or class installed to run lim.')
 
 
-from source.tools._utils import cached_property,cached_cosmo_property,cached_vid_property,get_default_params,check_params
-from source.tools._utils import check_model,check_bias_model,check_halo_mass_function_model,add_vector
-from source.tools._utils import log_interp1d,ulogspace,ulinspace,check_invalid_params,merge_dicts,lognormal
-import source.tools._vid_tools as vt
+from source.tools._utils import * 
+from source.tools._vid_tools import binedge_to_binctr
 import source.luminosity_functions as lf
 import source.mass_luminosity as ml
 import source.bias_fitting_functions as bm
@@ -69,11 +71,17 @@ class LineModel(object):
     Defaults to the model from Breysse et al. (2017)
     
     INPUT PARAMETERS:
+    
+    <COSMO PARAMETERS>
+    -------------------
     cosmo_code:          Whether to use class or camb (default: 'camb')
     
     cosmo_input_camb:    Dictionary to read and feed to camb
     
     cosmo_input_class:   Dictionary to read and feed to class
+    
+    <ASTROPHYSICAL PARAMETERS>
+    ---------------------------
 
     model_type:     Either 'LF' for a luminosity function model or 'ML' for a
                     mass-luminosity model.  Any other value will raise an
@@ -114,7 +122,7 @@ class LineModel(object):
                     parameter, but necessary to define high-mass cutoffs for
                     mass function integrals (Default = 10^15 Msun)
                     
-    nM:             Number of halo mass points (Default = 5000)
+    nM:             Number of halo mass points (Default = 500)
     
     Lmin:           Minimum luminosity for luminosity function calculations
                     (Default = 100 Lsun)
@@ -123,6 +131,18 @@ class LineModel(object):
                     (Default = 10^8 Lsun)
                     
     nL:             Number of luminosity points (Default = 5000)
+    
+    v_of_M:         Function returning the unitful FWHM of the line profile of
+                    emission given halo mass.
+                    Line widths are not applied if v_of_M is None.
+                    (default = None)
+                    (example: lambda M:50*u.km/u.s*(M/1e10/u.Msun)**(1/3.) )
+                    
+    line_incli:     Bool, if accounting for randomly inclined line profiles.
+                    (default = True; does not matter if v_of_M = None)
+    
+    <Pk PARAMETERS>
+    ----------------
     
     kmin:           Minimum wavenumber for power spectrum computations
                     (Default = 10^-2 Mpc^-1)
@@ -166,6 +186,9 @@ class LineModel(object):
                     
     nonlinear:      Using the non linear matter power spectrum in PKint (from halofit)
                     (Boolean, default = False)
+                    
+    <VID PARAMETERS>
+    -----------------
                     
     Tmin_VID:       Minimum temperature to compute the temperature PDF (default: 1e-2 uK)
     
@@ -215,6 +238,9 @@ class LineModel(object):
     '''
     
     def __init__(self,
+                 ##############
+                 # COSMO params
+                 ##############
                  cosmo_code = 'camb',
                  cosmo_input_camb=dict(f_NL=0,H0=67.36,cosmomc_theta=None,ombh2=0.02237, omch2=0.12, 
                                omk=0.0, neutrino_hierarchy='degenerate', 
@@ -225,11 +251,14 @@ class LineModel(object):
                                dark_energy_model='ppf',As=2.1e-09, ns=0.9649, nrun=0, 
                                nrunrun=0.0, r=0.0, nt=None, ntrun=0.0, 
                                pivot_scalar=0.05, pivot_tensor=0.05,
-                               parameterization=2,halofit_version='mead'),
+                               parameterization=2,halofit_version='mead2020'),
                  cosmo_input_class=dict(f_NL=0,H0=67.36,omega_b=0.02237, omega_cdm=0.12, 
                                A_s=2.1e-9,n_s=0.9649,
                                N_ncdm=3, m_ncdm='0.02,0.02,0.02', N_ur = 0.00641,
                                output='mPk,mTk'),
+                 ###############
+                 # ASTRO params
+                 ###############
                  model_type='LF',
                  model_name='SchCut', 
                  model_par={'phistar':9.6e-11*u.Lsun**-1*u.Mpc**-3,
@@ -241,10 +270,15 @@ class LineModel(object):
                  nuObs=30*u.GHz,
                  Mmin=1e9*u.Msun,
                  Mmax=1e15*u.Msun,
-                 nM=5000,
+                 nM=500,
                  Lmin=10*u.Lsun,
                  Lmax=1e8*u.Lsun,
                  nL=5000,
+                 v_of_M=None,
+                 line_incli=True,
+                 ###########
+                 # Pk params
+                 ###########
                  kmin = 1e-2*u.Mpc**-1,
                  kmax = 10.*u.Mpc**-1,
                  nk = 100,
@@ -260,18 +294,27 @@ class LineModel(object):
                  smooth=False,
                  do_conv_Wkmin = False,
                  nonlinear=False,
+                 ############
                  #VID params
+                 ############
+                 smooth_VID = True,
                  Tmin_VID=1.0e-2*u.uK,
-                 Tmax_VID=1000.*u.uK,
-                 nT=10**5,
-                 do_fast_VID=True,
-                 Ngal_max=100,
-                 Nbin_hist=101,
-                 subtract_VID_mean=False,
+                 Tmax_VID=100.*u.uK,
+                 Nbin_hist=100,
                  linear_VID_bin=False,
-                 do_sigma_G = True,
-                 sigma_G_input = 1.6,
-                 dndL_Lcut=0.*u.Lsun):
+                 subtract_VID_mean=False,
+                 #VID precision parameters
+                 Lsmooth_tol=7,
+                 T0_Nlogsigma=4,
+                 fT0_min=1e-5*u.uK**-1,
+                 fT0_max=1e4*u.uK**-1,
+                 fT_min=1e-5*u.uK**-1,
+                 fT_max=1e5*u.uK**-1,
+                 nfT0=1000,
+                 nT=2**18,
+                 n_leggauss_nodes_FT='../nodes1e5.txt',
+                 n_leggauss_nodes_IFT='../nodes1e4.txt',
+                 sigmaT_control=0.05*u.uK):
         
 
         # Get list of input values to check type and units
@@ -365,6 +408,10 @@ class LineModel(object):
             # increase z_max_pk if needed
         else:
             raise ValueError("Only 'class' or 'camb' can be used as cosmological Boltzmann code. Please, choose between them")
+        
+        if self.nT % 2:
+            print('nT must be even: increasing it by 1 to have it even')
+            self.nT = self.nT+1
         
     #################
     # Get cosmology #
@@ -783,7 +830,7 @@ class LineModel(object):
             for iL in range(self.nL):
                 LF[iL] = np.trapz(CLF_of_M[:,iL],self.M)
             #Add a cut off at low luminosities to ease computations. Default 0*u.Lsun
-            LF *= np.exp(-self.dndL_Lcut/self.L)
+            #LF *= np.exp(-self.dndL_Lcut/self.L)
             return LF
         
         
@@ -1068,8 +1115,7 @@ class LineModel(object):
             nbar = np.trapz(self.dndL,self.L)
         else:
             nbar = np.trapz(self.dndM,self.M)
-        return nbar
-        
+        return nbar        
         
     #############################
     # Power spectrum quantities #
@@ -1094,7 +1140,42 @@ class LineModel(object):
         else:
             return np.ones(self.Pm.shape)
 
+    @cached_property
+    def Wline(self):
+        '''
+        Fourier-space factor for Gaussian line profile, in k-mu-M grid.
+        Applicable for shot noise power spectrum.
         
+        By Dongwoo T. Chung
+        '''
+        if self.v_of_M is not None:
+            vvec = self.v_of_M(self.M).to(u.km/u.s)
+            sigma_v_of_M = ((1+self.z)/self.H*vvec/2.35482).to(u.Mpc)
+            if self.line_incli:
+                return dawsn_over_x_non_divergent(2/3**0.5*self.k_par[...,None]*sigma_v_of_M[None,None,:])
+            else:
+                return np.exp(-(self.k_par[...,None]*sigma_v_of_M[None,None,:])**2)
+        else:
+            return np.ones(self.Pm.shape+self.M.shape)
+            
+    @cached_property
+    def Wline_clust(self):
+        '''
+        Fourier-space factor for Gaussian line profile, in k-mu-M grid.
+        Just sqrt(Wline) for line_incli==False, but subtly different otherwise.
+        
+        By Dongwoo T. Chung
+        '''
+        if self.v_of_M is not None:
+            if self.line_incli:
+                vvec = self.v_of_M(self.M).to(u.km/u.s)
+                sigma_v_of_M = ((1+self.z)/self.H*vvec/2.35482).to(u.Mpc)
+                return dawsn_over_x_non_divergent((2/3)**0.5*self.k_par[...,None]*sigma_v_of_M[None,None,:])
+            else:
+                return self.Wline**0.5
+        else:
+            return np.ones(self.Pm.shape+self.M.shape)
+
     @cached_property
     def Pm(self):
         '''
@@ -1172,9 +1253,25 @@ class LineModel(object):
         
         if self.model_type == 'TOY':
             return self.model_par['Pshot']
+        #Consider line broadening (code by Dongwoo T. Chung)
+        elif self.v_of_M is not None:
+            if self.model_type == 'ML':
+                itgrnd = (self.LofM**2*self.dndM)[None,None,:]*self.Wline
+                L2bar = np.trapz(itgrnd,self.M)*self.fduty
+                # Add L vs. M scatter
+                L2bar = L2bar*np.exp(self.sigma_scatter**2*np.log(10)**2)
+                # Special case for Tony Li model- scatter does not preserve LCO
+                if self.model_name=='TonyLi':
+                    alpha = self.model_par['alpha']
+                    sig_SFR = self.model_par['sig_SFR']
+                    L2bar = L2bar*np.exp((2.*alpha**-2-alpha**-1)
+                                        *sig_SFR**2*np.log(10)**2)
+            else:
+                print("Line width modelling only available for ML models")
+                L2bar = 1.*self.L2mean
+            return self.CLT**2*L2bar
         else:
             return self.CLT**2*self.L2mean
-        
         
     @cached_property
     def Pk_twohalo(self):
@@ -1187,18 +1284,44 @@ class LineModel(object):
                 print("One halo term only available for ML models")
                 wt = self.Tmean*self.bavg
             else:
-                Mass_Dep = self.LofM*self.dndM
-                itgrnd = np.tile(Mass_Dep,(self.k.size,1)).T*self.ft_NFW*self.bofM
-                wt = self.CLT*np.trapz(itgrnd,self.M,axis=0)*self.fduty
-                # Special case for SFR(M) scatter in Tony Li model
-                if self.model_name=='TonyLi':
-                    alpha = self.model_par['alpha']
-                    sig_SFR = self.model_par['sig_SFR']
-                    wt = wt*np.exp((alpha**-2-alpha**-1)
-                                    *sig_SFR**2*np.log(10)**2/2.)
+                if self.v_of_M is not None:
+                    Mass_Dep = (self.LofM*self.dndM)[None,None,:]*self.Wline_clust
+                    itgrnd = (self.ft_NFW*self.bofM).T[None,:,:]*Mass_Dep
+                    wt = self.CLT*np.trapz(itgrnd,self.M,axis=2)*self.fduty
+                    # Special case for SFR(M) scatter in Tony Li model
+                    if self.model_name=='TonyLi':
+                        alpha = self.model_par['alpha']
+                        sig_SFR = self.model_par['sig_SFR']
+                        wt = wt*np.exp((alpha**-2-alpha**-1)
+                                        *sig_SFR**2*np.log(10)**2/2.)
+                else:
+                    Mass_Dep = self.LofM*self.dndM
+                    itgrnd = np.tile(Mass_Dep,(self.k.size,1)).T*self.ft_NFW*self.bofM
+                    wt = self.CLT*np.trapz(itgrnd,self.M,axis=0)*self.fduty
+                    # Special case for SFR(M) scatter in Tony Li model
+                    if self.model_name=='TonyLi':
+                        alpha = self.model_par['alpha']
+                        sig_SFR = self.model_par['sig_SFR']
+                        wt = wt*np.exp((alpha**-2-alpha**-1)
+                                        *sig_SFR**2*np.log(10)**2/2.)
         else:
-            wt = self.Tmean*self.bavg
-        
+            if self.v_of_M is not None:
+                if self.model_type == 'ML':
+                    itgrnd = (self.LofM*self.dndM)[None,None,:]*self.Wline_clust
+                    itgrnd*= self.bofM.T[None,:,:]
+                    wt = self.CLT*np.trapz(itgrnd,self.M)*self.fduty
+                    # Special case for Tony Li model- scatter does not preserve LCO
+                    if self.model_name=='TonyLi':
+                        alpha = self.model_par['alpha']
+                        sig_SFR = self.model_par['sig_SFR']
+                        wt*= np.exp((alpha**-2-alpha**-1)
+                                            *sig_SFR**2*np.log(10)**2/2.)
+                else:
+                    print("Line width modelling only available for ML models")
+                    wt = self.Tmean*self.bavg
+            else:
+                wt = self.Tmean*self.bavg
+            
         return wt**2*self.Pm
         
         
@@ -1212,19 +1335,33 @@ class LineModel(object):
                 print("One halo term only available for ML models")
                 return np.zeros(self.Pm.shape)*self.Pshot.unit
             else:
-                Mass_Dep = self.LofM**2.*self.dndM
-                itgrnd = np.tile(Mass_Dep,(self.nk,1)).T*self.ft_NFW**2.
-                #add effect for the scatter in LCO
-                itgrnd = itgrnd*np.exp(self.sigma_scatter**2*np.log(10)**2)
-                            
-                # Special case for Tony Li model- scatter does not preserve LCO
-                if self.model_name=='TonyLi':
-                    alpha = self.model_par['alpha']
-                    sig_SFR = self.model_par['sig_SFR']
-                    itgrnd = itgrnd*np.exp((2.*alpha**-2-alpha**-1)
-                                        *sig_SFR**2*np.log(10)**2)
-                wt = np.trapz(itgrnd,self.M,axis=0)*self.fduty
-                return np.tile(self.CLT**2.*wt,(self.nmu,1))
+                if self.v_of_M is not None:
+                    Mass_Dep = (self.LofM**2*self.dndM)[None,None,:]*self.Wline
+                    itgrnd = (self.ft_NFW**2.).T[None,:,:]*Mass_Dep
+                    #add effect for the scatter in LCO
+                    itgrnd = itgrnd*np.exp(self.sigma_scatter**2*np.log(10)**2)
+                    # Special case for Tony Li model- scatter does not preserve LCO
+                    if self.model_name=='TonyLi':
+                        alpha = self.model_par['alpha']
+                        sig_SFR = self.model_par['sig_SFR']
+                        itgrnd = itgrnd*np.exp((2.*alpha**-2-alpha**-1)
+                                            *sig_SFR**2*np.log(10)**2)
+                    wt = np.trapz(itgrnd,self.M,axis=2)*self.fduty
+                    return self.CLT**2.*wt
+                else:
+                    Mass_Dep = self.LofM**2.*self.dndM
+                    itgrnd = np.tile(Mass_Dep,(self.nk,1)).T*self.ft_NFW**2.
+                    #add effect for the scatter in LCO
+                    itgrnd = itgrnd*np.exp(self.sigma_scatter**2*np.log(10)**2)
+                                
+                    # Special case for Tony Li model- scatter does not preserve LCO
+                    if self.model_name=='TonyLi':
+                        alpha = self.model_par['alpha']
+                        sig_SFR = self.model_par['sig_SFR']
+                        itgrnd = itgrnd*np.exp((2.*alpha**-2-alpha**-1)
+                                            *sig_SFR**2*np.log(10)**2)
+                    wt = np.trapz(itgrnd,self.M,axis=0)*self.fduty
+                    return np.tile(self.CLT**2.*wt,(self.nmu,1))
         else:
             return np.zeros(self.Pm.shape)*self.Pshot.unit
     
@@ -1338,124 +1475,170 @@ class LineModel(object):
     ### Voxel Intensity Distribution Functions ##
     #############################################
     #############################################
-    
-    ##################
-    # Intensity bins #
-    ##################
-    @cached_vid_property
-    def Tedge(self):
-        '''
-        Edges of intensity bins. Uses linearly spaced bins if do_fast_VID=True,
-        logarithmically spaced if do_fast=False
-        '''
-        if self.do_fast_VID:
-            Te = ulinspace(self.Tmin_VID,self.Tmax_VID,self.nT+1)
-        else:
-            Te = ulogspace(self.Tmin_VID,self.Tmax_VID,self.nT+1)
-            
-        if self.subtract_VID_mean:
-            return Te-self.Tmean
-        else:
-            return Te
-            
         
     @cached_vid_property
     def T(self):
         '''
-        Centers of intensity bins
+        Centers of intensity bins (defined from the nufft1d1 routine)
         '''
-        return vt.binedge_to_binctr(self.Tedge)
+        dT = 2*self.Tmax_VID/self.nT
+        Tvec = dT*np.arange(-self.nT/2,self.nT/2)
+        return Tvec
         
-        
-    @cached_vid_property
-    def dT(self):
-        '''
-        Widths of intensity bins
-        '''
-        return np.diff(self.Tedge)
-        
-        
-    ######################################### 
-    # Number count probability distribution #
-    #########################################
-    @cached_vid_property
-    def Nbar(self):
-        '''
-        Mean number of galaxies per voxel
-        '''
-        return self.nbar*self.Vvox
-        
-        
-    @cached_vid_property
-    def Ngal(self):
-        '''
-        Vector of galaxy number counts, from 0 to self.Ngal_max
-        '''
-        return np.array(range(0,self.Ngal_max+1))
-        
-
-    @cached_vid_property
-    def sigma_G(self):
-        '''
-        rms of fluctuations in a voxel (Gaussian window)
-        '''
-        if self.do_sigma_G:
-            #kvalues, and kpar, kperp. Power spectrum in observed redshift
-            k = np.logspace(-2,2,128)*u.Mpc**-1
-            ki,mui = np.meshgrid(k,self.mu)
-            if self.cosmo_code == 'camb':
-                Pk = self.PKint(self.z,ki.value)*u.Mpc**3
-            else:
-                Pkvec = self.PKint(k.value,np.array([self.z]),len(k),1,0)*u.Mpc**3
-                Pk = np.tile(Pkvec,(self.nmu,1))
-            
-            kpar = ki*mui
-            kperp = ki*np.sqrt(1.-mui**2.)
-            
-            #Gaussian window for voxel -> FT
-            Wkpar2 = np.exp(-((kpar*self.sigma_par)**2).decompose())
-            Wkperp2 = np.exp(-((kperp*self.sigma_perp)**2).decompose())
-            Wk2 = Wkpar2*Wkperp2
-            
-            #Compute sigma_G
-            if self.f_NL == 0:
-                bias = self.bavg[-1]
-            else:
-                bias = interp1d(self.k,self.bavg,kind='linear',bounds_error=False,fill_value=[self.bavg[0],self.bavg[-1]])
-            integrnd = bias**2*Pk*Wk2*ki**2/(4.*np.pi**2)
-            integrnd_mu = np.trapz(integrnd,self.mu,axis=0)
-            sigma = np.sqrt(np.trapz(integrnd_mu,ki[0,:]))
-            
-            return sigma
-        else:
-            return self.sigma_G_input
-    
+    ##########################################
+    # Single-source characteristic functions #
+    ##########################################
     
     @cached_vid_property
-    def PofN(self):
+    def smooth_vox_pop(self):
         '''
-        Probability of a voxel containing N galaxies.  Uses the lognormal +
-        Poisson model from Breysse et al. 2017
+        Number of voxels with contributions from a single source after
+        smoothing, as function of mass if line broadening is included. 
+        (assumes a voxes is determined by the FWHM of the beam and the std 
+        of the channel)
+        
+        Returns unique values and the fraction of number counts for each
+        
+        Assumes Gaussian smoothing!
         '''
-        # PDF of galaxy density field mu
-        if self.model_type == 'ML':
-            Nbar = np.trapz(self.dndL,self.L)*self.Vvox
+        par_side = self.sigma_par.value/0.4247
+        perp_side = self.sigma_perp.value/0.4247
+        if self.smooth_VID:
+            Nsigma_prof = 20
+            supersample = 2
+            if self.v_of_M is not None:
+                if self.line_incli:
+                    vvec = self.v_of_M(self.M).to(u.km/u.s)
+                    sigma_v_of_M = ((1+self.z)/self.H*vvec/2.35482).to(u.Mpc).value
+                    sigma_par_res = self.sigma_par.value
+                    #Get the smoothing scales and the number of voxels that occupies
+                    sperp = self.sigma_perp.value
+                    Nvox_perp = int(2*Nsigma_prof*sperp/perp_side+1)
+                    Nvox_perp += Nvox_perp % 2 == 0
+                    lenvec_perp = Nvox_perp*supersample + Nvox_perp*supersample%2
+                    x_perp = np.linspace(-Nvox_perp*perp_side/2,Nvox_perp*perp_side/2,lenvec_perp)
+                    #line broadening convolved with the resolution: numerically using convolution theorem
+                    Ngauss = 800 #number of evaluations for the integral
+                    nodes,weights = roots_legendre(Ngauss) #obtain the nodes and weights for the GL integral
+                    #populate the voxels
+                    unique_L, counts = [[] for iM in range(self.nM)],[[] for iM in range(self.nM)]      
+                    for iM in range(self.nM):
+                        spar = np.sqrt(sigma_par_res**2. + sigma_v_of_M[iM]**2.)
+                        kmax,kmin = 3*spar,0
+                        kvec = (kmax-kmin)/2*nodes + (kmax+kmin)/2 
+                        fPDF_res = np.exp(-kvec**2*sigma_par_res**2/2)
+                        #Get the smoothing scales and the number of voxels that occupies
+                        Nvox_par = int(2*Nsigma_prof*spar/par_side+1)
+                        Nvox_par += Nvox_par % 2 == 0
+                        lenvec_par = Nvox_par*supersample + Nvox_par*supersample%2
+                        x_par = np.linspace(-Nvox_par*par_side/2,Nvox_par*par_side/2,lenvec_par)
+                        #convolution along the LOS first
+                        fPDF_broad = dawsn_over_x_non_divergent((2/3)**0.5*kvec*sigma_v_of_M[iM])
+                        fPDF_tot = fPDF_broad*fPDF_res
+                        #go back to configuration space
+                        xvec = np.linspace(-Nvox_par*par_side/2,Nvox_par*par_side/2,100)
+                        fPDF_tot_int = (kmax-kmin)/2*weights*fPDF_tot #normalization, weights and new variable for the change of interval
+                        Ptot = (finufft.nufft1d3(kvec,fPDF_tot_int.real+1j*fPDF_tot_int.imag,xvec,eps=1e-6,isign=1)/np.pi/2 + \
+                             finufft.nufft1d3(-kvec,fPDF_tot_int.real-1j*fPDF_tot_int.imag,xvec,eps=1e-6,isign=1)/np.pi/2).real 
+                        Ptot_i = interp1d(xvec,Ptot,kind='cubic')
+                        #Get the integrated luminosity that would be in each voxel after smoothing
+                        L_dif = np.zeros((lenvec_par-1,lenvec_perp-1,lenvec_perp-1))
+                        for i in range(lenvec_par-1):
+                            x_interval = (x_par[i+1]-x_par[i])/2*nodes + (x_par[i+1]+x_par[i])/2
+                            los_integral = np.sum((x_par[i+1]-x_par[i])/2*Ptot_i(x_interval)*weights)
+                            for j in range(lenvec_perp-1):
+                                perp_integral = (erf(x_perp[j+1]/2**0.5/sperp)-erf(x_perp[j]/2**0.5/sperp))/2
+                                for k in range(lenvec_perp-1):
+                                    L_dif[i,j,k] = los_integral*perp_integral*(erf(x_perp[k+1]/2**0.5/sperp)-erf(x_perp[k]/2**0.5/sperp))/2
+                        #downsample to get values for voxel size
+                        L_dif_new = np.zeros((int(L_dif.shape[0]/supersample)+1,int(L_dif.shape[1]/supersample)+1,int(L_dif.shape[2]/supersample)+1))
+                        for i in range(L_dif_new.shape[0]):
+                            for j in range(L_dif_new.shape[1]):
+                                for k in range(L_dif_new.shape[2]):
+                                    L_dif_new[i,j,k] = np.sum(L_dif[supersample*i:supersample*(i+1),supersample*j:supersample*(j+1),supersample*k:supersample*(k+1)])
+                        Lmax = np.max(L_dif_new)
+                        #get unique values with a given tolerance, removing values below that tolerance
+                        unique_L_iM, counts_iM = np.unique(np.around(L_dif_new/Lmax,decimals=self.Lsmooth_tol),return_counts = True)
+                        unique_L_iM *= Lmax
+                        #renormalize unique_L
+                        unique_L_iM /= np.sum(unique_L_iM*counts_iM)
+                        unique_L[iM],counts[iM] = unique_L_iM[1:], counts_iM[1:]
+                    return unique_L, counts
+                else:
+                    vvec = self.v_of_M(self.M).to(u.km/u.s)
+                    sigma_v_of_M = ((1+self.z)/self.H*vvec/2.35482).to(u.Mpc).value
+                    #Get the smoothing scales and the number of voxels that occupies
+                    sperp = self.sigma_perp.value
+                    Nvox_perp = int(2*Nsigma_prof*sperp/perp_side+1)
+                    Nvox_perp += Nvox_perp % 2 == 0
+                    lenvec_perp = Nvox_perp*supersample + Nvox_perp*supersample%2
+                    x_perp = np.linspace(-Nvox_perp*perp_side/2,Nvox_perp*perp_side/2,lenvec_perp)
+                    #line broadening convolved with the resolution
+                    unique_L, counts = [[] for iM in range(self.nM)],[[] for iM in range(self.nM)] 
+                    for iM in range(self.nM):
+                        #Get the smoothing scales and the number of voxels that occupies
+                        spar = np.sqrt(self.sigma_par.value**2. + sigma_v_of_M[iM]**2.)
+                        Nvox_par = int(2*Nsigma_prof*spar/par_side+1)
+                        Nvox_par += Nvox_par % 2 == 0
+                        lenvec_par = Nvox_par*supersample + Nvox_par*supersample%2
+                        x_par = np.linspace(-Nvox_par*par_side/2,Nvox_par*par_side/2,lenvec_par)
+                        #Get the integrated luminosity that would be in each voxel after smoothing
+                        L_dif = np.zeros((lenvec_par-1,lenvec_perp-1,lenvec_perp-1))
+                        for i in range(lenvec_par-1):
+                            los_integral = (erf(x_par[i+1]/2**0.5/spar)-erf(x_par[i]/2**0.5/spar))/2
+                            for j in range(lenvec_perp-1):
+                                perp_integral = (erf(x_perp[j+1]/2**0.5/sperp)-erf(x_perp[j]/2**0.5/sperp))/2
+                                for k in range(lenvec_perp-1):
+                                    L_dif[i,j,k] = los_integral*perp_integral*(erf(x_perp[k+1]/2**0.5/sperp)-erf(x_perp[k]/2**0.5/sperp))/2
+                        #downsample to get values for voxel size
+                        L_dif_new = np.zeros((int(L_dif.shape[0]/supersample)+1,int(L_dif.shape[1]/supersample)+1,int(L_dif.shape[2]/supersample)+1))
+                        for i in range(L_dif_new.shape[0]):
+                            for j in range(L_dif_new.shape[1]):
+                                for k in range(L_dif_new.shape[2]):
+                                    L_dif_new[i,j,k] = np.sum(L_dif[supersample*i:supersample*(i+1),supersample*j:supersample*(j+1),supersample*k:supersample*(k+1)])
+                        Lmax = np.max(L_dif_new)
+                        #get unique values with a given tolerance, removing values below that tolerance
+                        unique_L_iM, counts_iM = np.unique(np.around(L_dif_new/Lmax,decimals=self.Lsmooth_tol),return_counts = True)
+                        unique_L_iM *= Lmax
+                        #renormalize unique_L
+                        unique_L_iM /= np.sum(unique_L_iM*counts_iM)
+                        unique_L[iM],counts[iM] = unique_L_iM[1:], counts_iM[1:]
+                    return unique_L, counts
+            else:
+                #Get the smoothing scales and the number of voxels that occupies
+                spar,sperp = self.sigma_par.value,self.sigma_perp.value
+                Nvox_par = int(2*Nsigma_prof*spar/par_side+1)
+                Nvox_par += Nvox_par % 2 == 0
+                Nvox_perp = int(2*Nsigma_prof*sperp/perp_side+1)
+                Nvox_perp += Nvox_perp % 2 == 0
+                lenvec_par = Nvox_par*supersample + Nvox_par*supersample%2
+                lenvec_perp = Nvox_perp*supersample + Nvox_perp*supersample%2
+                x_par = np.linspace(-Nvox_par*par_side/2,Nvox_par*par_side/2,lenvec_par)
+                x_perp = np.linspace(-Nvox_perp*perp_side/2,Nvox_perp*perp_side/2,lenvec_perp)
+                #Get the integrated luminosity that would be in each voxel after smoothing
+                L_dif = np.zeros((lenvec_par-1,lenvec_perp-1,lenvec_perp-1))
+                for i in range(lenvec_par-1):
+                    los_integral = (erf(x_par[i+1]/2**0.5/spar)-erf(x_par[i]/2**0.5/spar))/2
+                    for j in range(lenvec_perp-1):
+                        perp_integral = (erf(x_perp[j+1]/2**0.5/sperp)-erf(x_perp[j]/2**0.5/sperp))/2
+                        for k in range(lenvec_perp-1):
+                            L_dif[i,j,k] = los_integral*perp_integral*(erf(x_perp[k+1]/2**0.5/sperp)-erf(x_perp[k]/2**0.5/sperp))/2
+                L_dif_new = np.zeros((int(L_dif.shape[0]/supersample)+1,int(L_dif.shape[1]/supersample)+1,int(L_dif.shape[2]/supersample)+1))
+                for i in range(L_dif_new.shape[0]):
+                    for j in range(L_dif_new.shape[1]):
+                        for k in range(L_dif_new.shape[2]):
+                            L_dif_new[i,j,k] = np.sum(L_dif[supersample*i:supersample*(i+1),supersample*j:supersample*(j+1),supersample*k:supersample*(k+1)])
+                Lmax = np.max(L_dif_new)
+                #get unique values with a given tolerance, removing values below that tolerance
+                unique_L, counts = np.unique(np.around(L_dif_new/Lmax,decimals=self.Lsmooth_tol),return_counts = True)
+                unique_L *= Lmax
+                #renormalize unique_L
+                unique_L /= np.sum(unique_L*counts)
+                return unique_L[1:], counts[1:]
         else:
-            Nbar = self.Nbar
-        logMuMin = np.log10(Nbar)-20*self.sigma_G
-        logMuMax = np.log10(Nbar)+5*self.sigma_G
-        mu = np.logspace(logMuMin.value,logMuMax.value,10**4)
-        mu2,Ngal2 = np.meshgrid(mu,self.Ngal) # Keep arrays for fast integrals
-        Pln = vt.lognormal_Pmu(mu2,Nbar,self.sigma_G)
-
-        P_poiss = poisson.pmf(Ngal2,mu2)
-                
-        return np.trapz(P_poiss*Pln,mu)
-        
-        
-    ###################
-    # Intensity PDF's #
-    ###################
+            #if no smoothing, just pass 1/sypersample^3 to have no effect in fPT
+            return np.array([1]),np.array([1])
+    
     @cached_vid_property
     def XLT(self):
         '''
@@ -1464,93 +1647,368 @@ class LineModel(object):
         '''
         return self.CLT/self.Vvox
         
+    @cached_vid_property
+    def leggaus_prep_FT(self):
+        '''
+        Get the position of the nodes for the Gauss-Legendre quadrature, and
+        the corresponding weights. Can be precomputed and read a table, or 
+        computed using scipy. 
+        This will be used for the Fourier transform
+        '''
+        if type(self.n_leggauss_nodes_FT) == str:
+            mat = np.loadtxt(self.n_leggauss_nodes_FT)
+            return mat[:,0],mat[:,1]
+        else:
+            return roots_legendre(self.n_leggauss_nodes_FT)
     
     @cached_vid_property
-    def P1(self):
+    def leggaus_prep_IFT(self):
         '''
-        Probability of observing a given intensity in a voxel which contains
-        exactly one emitter
+        Get the position of the nodes for the Gauss-Legendre quadrature, and
+        the corresponding weights. Can be precomputed and read a table, or 
+        computed using scipy. 
+        This will be used for the Inverse Fourier transform
         '''
-        # Compute dndL at L's equivalent to T bins        
-        if self.model_type == 'ML':
-            dndL_T = interp1d(self.L,self.dndL,bounds_error=False,fill_value='extrapolate')
-            if self.subtract_VID_mean:
-                LL = ((self.T+self.Tmean)/self.XLT).to(u.Lsun)
-            else:
-                LL = (self.T/self.XLT).to(u.Lsun)
-            dndL = dndL_T(LL.value)*self.dndL.unit
-            PT1 = dndL/(np.trapz(self.dndL,self.L)*self.XLT)
+        if type(self.n_leggauss_nodes_IFT) == str:
+            mat = np.loadtxt(self.n_leggauss_nodes_IFT)
+            return mat[:,0],mat[:,1]
         else:
-            dndL_T = lambda L: getattr(lf,self.model_name)(L, self.model_par)
-            if self.subtract_VID_mean:
-                return dndL_T((self.T+self.Tmean)/self.XLT)/(self.nbar*self.XLT)
-            else:
-                return dndL_T(self.T/self.XLT)/(self.nbar*self.XLT)
-        return PT1
+            return roots_legendre(self.n_leggauss_nodes_IFT)
+            
+    @cached_vid_property
+    def fP1_0_fun(self):
+        '''
+        Generates interpolated function for the single-source characteristic
+        function at an arbitrary halo mass.  Assumes a lognormal scatter with
+        width given by self.sigma_scatter.
+        '''
+        #change between unit temperature and luminosity
+        LofM0 = 1*self.Tmean.unit/self.XLT
+        #dummy temperature (and corresponding luminosity) vector
+        exp = self.T0_Nlogsigma*self.sigma_scatter
+        Tmax_log = 10**(exp)*self.Tmean.unit
+        Tmin_log = 10**-(2*exp)*self.Tmean.unit
+        Nbin_log = 2**15+1
         
+        Tedge_log = ulogspace(Tmin_log,Tmax_log,Nbin_log)
+        Tlog = binedge_to_binctr(Tedge_log)
+        L = Tlog/self.XLT
+        
+        #Mean-preserving lognormal distribution to multiply
+        mu0 = 0.5*self.sigma_scatter**2*np.log(10)-np.log10(LofM0/u.Lsun)
+        P1_0 = (np.exp(-(np.log10(L/u.Lsun)+mu0)**2/(2*self.sigma_scatter**2))/
+                (self.XLT*L*self.sigma_scatter*np.log(10)*np.sqrt(2*np.pi)))
+        #normalize just in case
+        P1_0 = P1_0/np.trapz(P1_0,Tlog)
+        #FT and interpolate. First get the node positions in the interval of interest
+        nodes,weights = self.leggaus_prep_FT
+        T2 = (np.max(Tlog)-np.min(Tlog))/2*nodes + (np.max(Tlog)+np.min(Tlog))/2
+        #interpolate and evaluate in interva (dimensionless, already normalized)
+        P1_0_i = interp1d(Tlog,P1_0,bounds_error=False,fill_value=0)(T2)*self.Tmean.unit**-1
+        P1_toFT = (np.max(Tlog)-np.min(Tlog))/2*weights*P1_0_i
+        #positions in Fourier space
+        fT0 = ulogspace(self.fT0_min,self.fT0_max,self.nfT0)
+        #compute the FT
+        fP1_0 = finufft.nufft1d3(T2,P1_toFT+0j,fT0,eps=1e-6,isign=-1)
+        #interpolate FT
+        return interp1d(fT0,fP1_0,fill_value=(1.+0j,0.+0j),bounds_error=False)
+        
+    def calc_fP1_pos(self,fT,Li):
+        '''
+        Function to calculate the single-source characteristic function for
+        sources with a given mean luminosity Li.  Only works for positive fT
+        values, full characteristic function is supplied by self.calc_fP1
+        '''
+        if np.any(fT<0):
+            raise ValueError('All fT values given to fP1_pos must be positive or zero')
+
+        LofM0 = 1*self.Tmean.unit/self.XLT
+        Lratio = Li/LofM0
+        return self.fP1_0_fun(fT*Lratio)
+        
+    def calc_fP1(self,Li):
+        '''
+        Calculates the full single-source characteristic function for sources
+        with a given mean luminosity Li.  Uses calc_fP1_pos and symmetry requirements
+        given that the real-space P1 is real.
+        Not used right now (fT always positive + symmetry considerations), 
+        but may be useful for the future
+        '''
+        if np.any(self.fT<0):
+            fT_a = -self.fT[self.fT<0]
+            fP1_a = np.conjugate(self.calc_fP1_pos(fT_a,Li))
+        else:
+            fP1_a = np.array([])
+        
+        fT_b = self.fT[self.fT>=0]
+        fP1_b = self.calc_fP1_pos(fT_b,Li)
+        return np.append(fP1_a,fP1_b)
+        
+    @cached_vid_property
+    def fT_and_edges(self):
+        '''
+        Fourier conjugate bin centers 
+        (and indices for each limit interval)
+        '''
+        nodes,weights = self.leggaus_prep_IFT
+        #Have some fT edges log-spaced, the rest lin-space, keeping 3pi distance for nufft
+        Npi = 2
+        self.Npi_fT = Npi
+        #number of log bins
+        dT = 2*self.Tmax_VID/self.nT
+        fTlog_max = Npi*np.pi/dT
+        dex_fTlog = int(np.ceil(np.log10(fTlog_max/self.fT_min)+10))
+        fT_bins_log = np.logspace(np.log10(self.fT_min.value),np.log10(fTlog_max.value),dex_fTlog)*self.fT_min.unit
+        #number of lin bins
+        fT_bins_lin = np.arange(fTlog_max*dT,self.fT_max*dT,2*Npi*np.pi)[1:]/dT
+        #put them together
+        fT_bins = np.concatenate((fT_bins_log,fT_bins_lin))
+        
+        fT = np.zeros(len(nodes)*(len(fT_bins)-1))*self.fT_min.unit
+        fT_Nind = np.arange(len(fT_bins))*len(nodes)
+        for ifT in range(len(fT_bins)-1):
+            fT[fT_Nind[ifT]:fT_Nind[ifT+1]] = (fT_bins[ifT+1]-fT_bins[ifT])/2*nodes + (fT_bins[ifT+1]+fT_bins[ifT])/2
+        #return the fT and the bins for the interval edges and the number of log bins
+        return fT, fT_Nind, dex_fTlog
+    
+    ###################
+    # VID calculation #
+    ###################
+    
+    @cached_vid_property
+    def fPT_N(self):
+        '''
+        Characteristic function of instrumental noise, assumed to be Gaussian
+        '''
+        fT = self.fT_and_edges[0]
+        return np.exp(-fT**2*self.sigma_N**2/2.)
+        
+    @cached_vid_property
+    def PT_N(self):
+        '''
+        Noise probability distribution
+        '''
+        return np.exp(-self.T**2/(2*self.sigma_N**2))/np.sqrt(2*np.pi*self.sigma_N**2)
+        
+    @cached_vid_property
+    def Pvar(self):
+        '''
+        Variance of the matter power spectrum in scales of a cubic voxel
+        (side length perp to line of sight corresponding to sigma_FWHM)
+        '''
+        kx = np.logspace(-3,2,200)
+        kx = np.append(-kx[::-1],kx)*self.k.unit
+        ky = np.logspace(-3,2,200)
+        ky = np.append(-ky[::-1],ky)*self.k.unit
+        kz = np.logspace(-3,2,200)
+        kz = np.append(-kz[::-1],kz)*self.k.unit
+        k = (kx[:,None,None]**2+ky[None,:,None]**2+kz[None,None,:]**2)**0.5
+        
+        bh = np.trapz(self.bofM*np.tile(self.dndM,(self.nk,1)).T,self.M,axis=0)/self.nbar
+        if self.do_RSD:
+            kaiser = (1.+np.mean(self.f_eff)/bh[0]*(kz[None,None,:]/k)**2.)**2. #already squared
+            if self.FoG_damp == 'Lorentzian':
+                FoG = (1.+0.5*(kz[None,None,:]*self.sigma_NL).decompose()**2.)**-2.
+            elif self.FoG_damp == 'Gaussian':
+                FoG = np.exp(-((kz[None,None,:]*self.sigma_NL)**2.).decompose()) 
+            else:
+                raise ValueError('Only Lorentzian or Gaussian damping terms for FoG')
+        else:
+            kaiser, FoG = 1,1
+            
+        if self.cosmo_code == 'camb':
+            #use the nonlinear Pk
+            if self.camb_pars.num_nu_massive != 0:
+                var = 8
+            else:
+                var = 7
+            
+            PK = camb.get_matter_power_interpolator(self.camb_pars, zmin=self.z-0.01, 
+                                                    zmax=self.z+0.01, nz_step=3, 
+                                                    zs=None, kmax=100, nonlinear=True,
+                                                    var1=var, var2=var, hubble_units=False, 
+                                                    k_hunit=False, return_z_k=False,
+                                                    k_per_logint=None, log_interp=False, 
+                                                    extrap_kmax=True)  
+            Pm = PK.P(self.z,k.value)*u.Mpc**3
+        else:
+            #with class, we would have to recompute everything
+            Pm = self.PKint(self.z,k.value)*u.Mpc**3
+        
+        rad_perp = self.sigma_perp/0.4247
+        rad_par = self.sigma_par/0.4247
+        kxr = (kx*rad_perp).decompose().value/2.
+        kyr = (ky*rad_perp).decompose().value/2.
+        kzr = (kz*rad_perp).decompose().value/2.
+        Wkx = np.sin(kxr)/kxr
+        Wky = np.sin(kyr)/kyr
+        Wkz = np.sin(kzr)/kzr
+
+        itgrnd = (Wkx[:,None,None]*Wky[None,:,None]*Wkz[None,None,:])**2*Pm*FoG*kaiser/(8*np.pi**3)
+        return simps(simps(simps(itgrnd,kz,axis=2),ky,axis=1),kx)
+        
+    @cached_vid_property
+    def exp_fPT_signal(self):
+        '''
+        Exponential of the signal-only characteristic funtion for line intensity
+        '''
+        fT = self.fT_and_edges[0]
+        Lsmooth,counts = self.smooth_vox_pop
+        dndM = self.dndM
+        bM = self.bofM[:,0]
+        LofM = self.LofM
+        pp = np.zeros((self.nM,len(fT)),dtype='complex128')*u.Msun**-1
+        if self.v_of_M is not None and self.smooth_VID:
+            for iM in range(self.nM):
+                Vprof = self.Vvox*np.sum(counts[iM])
+                Lfraction = counts[iM]/np.sum(counts[iM])
+                NLsmooth = len(Lsmooth[iM])
+                #add the effect of the smoothing
+                f_dummy = np.zeros(len(fT),dtype='complex128')
+                for jj in range(NLsmooth):
+                    f_dummy += Lfraction[jj]*self.calc_fP1_pos(fT,LofM[iM]*Lsmooth[iM][jj])
+                pp[iM,:] = Vprof*dndM[iM]*(f_dummy-1)
+        else:
+            Vprof = self.Vvox*np.sum(counts)
+            Lfraction = counts/np.sum(counts)
+            NLsmooth = len(Lsmooth)
+            for iM in range(self.nM):
+                #add the effect of the smoothing
+                f_dummy = np.zeros(len(fT),dtype='complex128')
+                for jj in range(NLsmooth):
+                    f_dummy += Lfraction[jj]*self.calc_fP1_pos(fT,LofM[iM]*Lsmooth[jj])
+                pp[iM,:] = Vprof*dndM[iM]*(f_dummy-1)            
+        exp_un = np.trapz(pp,self.M,axis=0)
+        exp_cl = np.trapz(pp*bM[:,None],self.M,axis=0)**2*self.Pvar/2.
+        return exp_un+exp_cl
+        
+    @cached_vid_property
+    def fPT_S(self):
+        '''
+        Signal-only characteristic function for line intensity.
+        
+        Unstable at high-k due to clustering term. Includes a control "noise"
+        contribution to avoid problems.
+        
+        NOTE: Often the inverse Fourier transform of this will be unreliable
+        for linearly-spaced T bins
+        '''
+        # ~ #Get nodes, weights, positions in Fourier space and imtervals for intensities
+        fT = self.fT_and_edges[0]
+        exp_control = -fT**2*self.sigmaT_control**2/2.
+        if self.subtract_VID_mean:
+            exp_shift = 1j*fT*self.Tmean
+        else:
+            exp_shift = 0.
+        #add everything
+        return np.exp(self.exp_fPT_signal+exp_control+exp_shift)
+        
+    @cached_vid_property
+    def fPT(self):
+        '''
+        Full characteristic function of line intensity
+        
+        In this case we don't use the control "noise", we have the actual noise
+        '''
+        # ~ #Get nodes, weights, positions in Fourier space and imtervals for intensities
+        fT = self.fT_and_edges[0]
+        exp_noise = -fT**2*self.sigma_N**2/2.
+        if self.subtract_VID_mean:
+            exp_shift = 1j*fT*self.Tmean
+        else:
+            exp_shift = 0.
+        #add everything
+        return np.exp(self.exp_fPT_signal+exp_noise+exp_shift)
+        
+    @cached_vid_property
+    def PT_S(self):
+        '''
+        Probability distribution of measuring signal intensity between T and T+dT
+        in any given voxel. (includes the control "noise")
+        '''
+        #Get nodes, weights, positions in Fourier space and intervals for intensities
+        nodes,weights = self.leggaus_prep_IFT
+        fT, fT_Nind,NlogfT = self.fT_and_edges
+        nfT_interval = len(fT_Nind)-1
+        T = self.T
+        PT = np.zeros(self.nT,dtype='complex128')
+        dT = 2*self.Tmax_VID/self.nT
+        Npi = int(fT[fT_Nind[NlogfT-1]]*dT/np.pi)
+        #create the nufft plan (type1)
+        plan = finufft.Plan(1,(self.nT,),isign=1,eps=1e-6)
+        #inverse fourier transform computed piecewise-
+        for ifT in range(nfT_interval):
+            #prepare for the IFT
+            print(ifT)
+            if ifT == nfT_interval-1:
+                fTmax = self.fT_max
+            else:
+                fTmax = fT[fT_Nind[ifT+1]]
+            fTvec = dT*fT[fT_Nind[ifT]:fT_Nind[ifT+1]]
+            if ifT >= NlogfT-1:
+                fTvec -= 2*Npi*np.pi*(ifT-NlogfT+2)
+            fPT_toFT = ((fTmax-fT[fT_Nind[ifT]])/2*weights*self.fPT_S[fT_Nind[ifT]:fT_Nind[ifT+1]])#.astype('complex64')
+            #positive fft
+            plan.setpts(fTvec)
+            PT += plan.execute(fPT_toFT)
+            #negative fft
+            plan.setpts(-fTvec)
+            PT += plan.execute(fPT_toFT.conj())
+
+        #normalize with the FT convention and give units
+        PT = PT.real/np.pi/2*self.Tmean.unit**-1
+        #check normalization
+        nrm = np.trapz(PT,self.T)
+        print(PT,self.T)
+        print('norm of PT is = ', nrm)
+        if abs(nrm-1)>5e-2:
+            print('PT not properly normalized.')
+        return PT
         
     @cached_vid_property
     def PT(self):
         '''
-        Probability of intensity between T and T+dT in a given voxel.  Uses
-        fft's and linearly spaced T points if do_fast_VID=1.  Uses brute-force
-        convolutions and logarithmically spaced T points if do_fast_VID=0
-        
-        Does NOT include the delta function at T=0 from voxels containing zero
-        sources.  That is handled by self.PT_zero, which is later taken into
-        account when computing B_i. This means that PT will not integrate to
-        unity, but rather 1-PT_zero.
+        Probability distribution of measuring total intensity between T and T+dT
+        in any given voxel. (includes the instrumental noise)
         '''
-        if self.do_fast_VID:
-            fP1 = fft(self.P1)*self.dT
-            # FT of PDF should be dimensionless, but the fft function removes
-            # the unit from P1
-            fP1 = ((fP1*self.P1.unit).decompose()).value 
-            
-            fPT = np.zeros(self.T.size,dtype=complex)
+        #Get nodes, weights, positions in Fourier space and intervals for intensities
+        nodes,weights = self.leggaus_prep_IFT
+        fT, fT_Nind,NlogfT = self.fT_and_edges
+        nfT_interval = len(fT_Nind)-1
+        T = self.T
+        PT = np.zeros(self.nT,dtype='complex128')
+        dT = 2*self.Tmax_VID/self.nT
+        Npi = self.Npi_fT
+        #create the nufft plan (type1)
+        plan = finufft.Plan(1,(self.nT,),isign=1,eps=1e-6)
+        #inverse fourier transform computed piecewise-
+        for ifT in range(nfT_interval):
+            #prepare for the IFT
+            print(ifT)
+            if ifT == nfT_interval-1:
+                fTmax = self.fT_max
+            else:
+                fTmax = fT[fT_Nind[ifT+1]]
+            fTvec = dT*fT[fT_Nind[ifT]:fT_Nind[ifT+1]]
+            if ifT >= NlogfT-1:
+                fTvec -= 2*Npi*np.pi*(ifT-NlogfT+2)
+            fPT_toFT = ((fTmax-fT[fT_Nind[ifT]])/2*weights*self.fPT[fT_Nind[ifT]:fT_Nind[ifT+1]])#.astype('complex64')
+            #positive fft
+            plan.setpts(fTvec)
+            PT += plan.execute(fPT_toFT)
+            #negative fft
+            plan.setpts(-fTvec)
+            PT += plan.execute(fPT_toFT.conj())
 
-            for ii in range(1,self.Ngal_max+1):
-                fPT += fP1**(ii)*self.PofN[ii].value
-                        
-            # Errors in fft's leave a small imaginary part, remove for output
-            return (ifft(fPT)/self.dT).real
-            
-        else:
-            P_N = np.zeros([self.Ngal_max,self.T.size])*self.P1.unit
-            P_N[0,:] = self.P1
-            
-            for ii in range(1,self.Ngal_max):
-                P_N[ii,:] = vt.conv_parallel(self.T,P_N[ii-1,:],
-                                            self.T,self.P1,self.T)
-            
-            PT = np.zeros(self.T.size)
-
-            for ii in range(0,self.Ngal_max):
-                PT = PT+P_N[ii,:]*self.PofN[ii+1]
-                
-            return PT
-            
-            
-    @cached_vid_property
-    def PT_zero(self):
-        '''
-        P(T) contains a delta function at T=0 from voxels which contain zero 
-        sources.  Delta functions are difficult to include naturally in
-        arrays, so we model it separately here.  This quantity will need to be
-        taken into account for any integrals over P(T) which cover T=0. (See
-        the self.normalization function below)
-        '''
-        return self.PofN[0]
-                
-                
-    @cached_vid_property
-    def normalization(self):
-        '''
-        Outputs the value of integral(P(T)dT) including the spike at T=0.
-        Used as a numerical check, should come out quite close to 1.0
-        '''
-        return np.trapz(self.PT,self.T)+self.PT_zero
-        
+        #normalize with the FT convention and give units
+        PT = PT.real/np.pi/2*self.Tmean.unit**-1
+        #check normalization
+        nrm = np.trapz(PT,self.T)
+        print(PT,self.T)
+        print('norm of PT is = ', nrm)
+        if abs(nrm-1)>5e-2:
+            print('PT not properly normalized.')
+        return PT
         
     ########################
     # Predicted histograms #
@@ -1561,34 +2019,59 @@ class LineModel(object):
         '''
         Edges of histogram bins
         '''
-        if self.linear_VID_bin:
-            Te = ulinspace(-self.Tmax_VID,self.Tmax_VID,self.Nbin_hist+1)
+        if self.Tmin_VID.value <= 0:
+            print('Note that, for negative intensities, the binning has to be linear')
+            Te = ulinspace(self.Tmin_VID,self.Tmax_VID,self.Nbin_hist+1)
         else:
-            Te = ulogspace(self.Tmin_VID,self.Tmax_VID,self.Nbin_hist+1)
+            if self.linear_VID_bin:
+                Te = ulinspace(self.Tmin_VID,self.Tmax_VID,self.Nbin_hist+1)
+            else:
+                Te = ulogspace(self.Tmin_VID,self.Tmax_VID,self.Nbin_hist+1)
         
-        if self.subtract_VID_mean:
-            return Te-self.Tmean
-        else:
-            return Te
+        return Te
         
     @cached_vid_property
     def Ti(self):
         '''
         Centers of histogram bins
         '''
-        return vt.binedge_to_binctr(self.Tedge_i)
+        return binedge_to_binctr(self.Tedge_i)
         
     @cached_vid_property
     def Bi(self):
         '''
-        Predicted number of voxels with a given binned temperature
+        Predicted VID of voxels with a given binned temperature. 
+        Normalized by the number of voxels (i.e., sum(Bi)=1)
         '''
-        if self.subtract_VID_mean:
-            return vt.pdf_to_histogram(self.T,self.PT,self.Tedge_i,self.Nvox,
-                                        self.Tmean,self.PT_zero)
-        else:
-            return vt.pdf_to_histogram(self.T,self.PT,self.Tedge_i,self.Nvox,
-                                        0.*self.Tmean.unit,self.PT_zero)
+        Pi = interp1d(self.T.value,self.PT.value,fill_value=0.,bounds_error=False)
+        B = np.zeros(self.Nbin_hist)
+        for ii in range(self.Nbin_hist):
+            B[ii] = quad(Pi,self.Tedge_i[ii].value,self.Tedge_i[ii+1].value)[0]
+        return B
+        
+    @cached_vid_property
+    def Bi_S(self):
+        '''
+        Predicted VID of voxels with a given binned temperature. 
+        Normalized by the number of voxels (i.e., sum(Bi)=1)
+        '''
+        Pi = interp1d(self.T.value,self.PT_S.value,fill_value=0.,bounds_error=False)
+        B = np.zeros(self.Nbin_hist)
+        for ii in range(self.Nbin_hist):
+            B[ii] = quad(Pi,self.Tedge_i[ii].value,self.Tedge_i[ii+1].value)[0]
+        return B
+        
+    @cached_vid_property
+    def Bi_N(self):
+        '''
+        Predicted VID of voxels with a given binned temperature. 
+        Normalized by the number of voxels (i.e., sum(Bi)=1)
+        '''
+        Pi = interp1d(self.T.value,self.PT_N.value,fill_value=0.,bounds_error=False)
+        B = np.zeros(self.Nbin_hist)
+        for ii in range(self.Nbin_hist):
+            B[ii] = quad(Pi,self.Tedge_i[ii].value,self.Tedge_i[ii+1].value)[0]
+        return B
                                        
                                         
     ######################################
@@ -1612,7 +2095,7 @@ class LineModel(object):
             
             # Draw galaxy luminosities
             Ledge = np.logspace(0,10,10**4+1)*u.Lsun
-            Lgal = vt.binedge_to_binctr(Ledge)
+            Lgal = binedge_to_binctr(Ledge)
             dL = np.diff(Ledge)
             PL = log_interp1d(self.L.value,self.dndL.value)(Lgal.value)*dL
             PL = PL/PL.sum() # Must be exactly normalized
@@ -1659,14 +2142,22 @@ class LineModel(object):
         if 'hmf_model' in new_params:
             check_halo_mass_function_model(new_params['hmf_model'])
     
+        if 'nT' in new_params:
+            if new_params['nT'] % 2:
+                print('nT must be even: increasing it by 1 to have it even')
+                new_params['nT'] = new_params['nT']+1
     
         #List of observable parameters:
         obs_params = ['Tsys_NEFD','Nfeeds','beam_FWHM','Delta_nu','dnu',
-                      'tobs','Omega_field','Nfield']
+                      'tobs','Omega_field','Nfield','N_FG_par','N_FG_perp',
+                      'do_FG_wedge','a_FG','b_FG']
                       
-        vid_params = ['Tmin_VID','Tmax_VID','nT','do_fast_VID','Ngal_max',
-                       'Nbin_hist','subtract_VID_mean','linear_VID_bin',
-                       'do_sigma_G','sigma_G_input']
+        vid_params = ['Tmin_VID','Tmax_VID','nT','fT_min','fT_max',
+                      'Nsigma_prof','Lsmooth_tol',
+                      'Nbin_hist','subtract_VID_mean','linear_VID_bin',
+                      'T0_Nlogsigma','fT0_min','fT0_max','nfT0',
+                      'n_leggauss_nodes_FT','n_leggauss_nodes_IFT',
+                      'nfT_interval','nT_interval','sigmaT_control']
         
         # Clear cached properties so they can be updated. If only obs changes,
         #   only update cached obs and vid properties. If only vid changes,
