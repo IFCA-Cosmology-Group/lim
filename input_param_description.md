@@ -2,7 +2,7 @@
 
 Here we briefly describe all the input parameters that can be set for lim, specifying the default parameters.
 
-
+### Cosmology parameters
 
 - **cosmo_code**: Whether to use class or camb (default: 'camb')
     
@@ -10,15 +10,17 @@ Here we briefly describe all the input parameters that can be set for lim, speci
     
 - **cosmo_input_class**: Dictionary to read and feed to class
 
+### Astrophysical parameters
+
 - **model_type**: Either 'LF' for a luminosity function model or 'ML' for a mass-luminosity model.  Any other value will raise an error.  Note that some outputs are only available for one model_type. (Default = 'LF')
     
 - **model_name**: Name of line emission model.  Must be the name of a function defined in luminosity_functions.py (for model_name='LF') or mass_luminosity.py (for model_name='ML'). (Default = 'SchCut')
                     
 - **model_par**: Dictionary containing the parameters of the chosen model (Default = Parameters of Breysse et al. 2017 CO model). Check mass_luminosity.py for 'ML' and luminosity_functions.py for 'LF' for information of the parameters for each model
                     
-- **hmf_model**: Fitting function for the halo model using Pylians. To choose among 'ST, 'Tinker', 'Crocce', 'Jenkins', 'Warren', 'Watson', 'Watson_FOF', 'Angulo', (Default: 'ST').
+- **hmf_model**: Fitting function for the halo mass function to choose from those present in halo_mass_functions.py (default:'ST')
                     
-- **bias_model**: Fitting function for the bias model. To choose among 'Mo96', 'Jing98', 'ST99', 'SMT01', 'Seljak04', 'Seljak04_cosmo', 'Mandelbaum05', 'Tinker05', 'Tinker10', 'Manera10'
+- **bias_model**: Fitting function for the bias model to choose from those present in bias_fitting_functions.py (default:'ST99')
                     
 - **bias_par**: A dictionary to pass non-standard values for the parameters of each bias model (look at bias_fitting_functions.py to see the parameters needed)
                     
@@ -30,13 +32,19 @@ Here we briefly describe all the input parameters that can be set for lim, speci
     
 - **Mmax**: Maximum mass of line emitting halo.  Rarely a physical parameter, but necessary to define high-mass cutoffs for mass function integrals (Default = 10^15 Msun)
                     
-- **nM**: Number of halo mass points (Default = 5000)
+- **nM**: Number of halo mass points (Default = 500)
     
 - **Lmin**: Minimum luminosity for luminosity function calculations (Default = 100 Lsun)
                     
 - **Lmax**: Maximum luminosity for luminosity function calculations (Default = 10^8 Lsun)
                     
 - **nL**: Number of luminosity points (Default = 5000)
+
+- **v_of_M**: Function returning the unitful FWHM of the line profile of emission given halo mass. Line widths are not applied if v_of_M is None. (default = None) (example: `lambda M:50*u.km/u.s*(M/1e10/u.Msun)**(1/3.)`)
+                    
+- **line_incli**: Bool, if accounting for randomly inclined line profiles. (default = True; does not matter if v_of_M = None)
+    
+### P(k) parameters
     
 - **kmin**: Minimum wavenumber for power spectrum computations (Default = 10^-2 Mpc^-1)
                     
@@ -67,28 +75,38 @@ Here we briefly describe all the input parameters that can be set for lim, speci
 - **do_conv_Wkmin**: Convolve the power spectrum with Wkmin instead of using a exponential suppression. Only relevant if smooth==True. (Default = False) Assumes a cylindrical volume
                     
 - **nonlinear**: Using the non linear matter power spectrum in PKint (from halofit) (Boolean, default = False)
-                    
+
+### VID parameters
+
 - **Tmin_VID**: Minimum temperature to compute the temperature PDF (default: 1e-2 uK)
-    
+
 - **Tmax_VID**: Maximum temperature to compute the temperature PDF (default: 1e3 uK)
-    
-- **nT**: Number of points in temperature to compute the PDF (default: 1e5) (If using do_fast_VID, may require a very high number)
-    
-- **do_fast_VID**: Using FFTs to convolve the temperature PDF and compute the VID faster (Boolean, default: True)
-                    
-- **Ngal_max**: Maximum value for the galaxies in a voxel (default: 100)
-    
+
 - **Nbin_hist**: Number of bins to compute the VID histogram from the PDF (default=101)
-    
-- **subtract_VID_mean**:  Remove the mean from the VID measurements (default=False)
-    
+
+- **subtract_VID_mean**: Remove the mean from the VID measurements (default=False)
+
 - **linear_VID_bin**: Using a linear sampling for the VID bins in the histogram (Boolean, default=False, which results in log binning)
+
+- **Lsmooth_tol**: Number of decimals for the tolerance of the ratio betweenthe luminosity in a voxel and the maximum luminsity when smooth_VID == True (Default: 7)
+
+- **T0_Nlogsigma**: Scale (log) for the T0 array for the lognormal temperature distribution to model the intrinsic scatter of luminosities (default: 4)
+
+- **fT0_min**: Minimum value for the Fourier conjugate of the temperature for the Fourier transform of the lognormal temperature distribution to model the intrinsic scatter of luminosities (default: 1e-5*u.uK**-1)
+
+- **fT0_max**: Maximum value for the Fourier conjugate of the temperature for the Fourier transform of the lognormal temperature distribution to model the intrinsic scatter of luminosities (default: 1e5*u.uK**-1)
+   
+- **nfT0**: Number of points in the array of the Fourier conjugate of the temperature for the Fourier transform of the lognormal temperature distribution to model the intrinsic scatter of luminosities (default: 1000)
+
+- **nT**: Number of points in the Temperature array for the PT (default: 2**18)
+
+- **n_leggauss_nodes_FT**: Number of nodes in the Legendre-Gauss quadrature for the NUFFTs. Can be an integer or a file with them already computed. (Default: ../nodes1e5.txt)
+
+- **n_leggauss_nodes_IFT**: Number of nodes in the Legendre-Gauss quadrature for the backwards NUFFTs. Can be an integer or a file with them already computed. (Default: ../nodes1e4.txt)
+
+- **sigma_PT_stable**: Standard deviation of a dummy Gaussian to ensure stability in the PT computation (especially for the clustering part) when there is no noise.  (default: 0.05*u.uK)
                     
-- **do_sigma_G**: Compute the variance of galaxies in a voxel to get PofN according to the power spectrum. (Boolean, default=True)
-                    
-- **sigma_G_input**: Value of the standard deviation of galaxy number in a voxel (Only relevant if do_sigma_G = False, default= 1.6)
-                    
-- **dndL_Lcut**: Cut in the luminosity function (at low L) if computed from L(M), useful for numerical performance if scatter is too big. (Only relevant if model_type='ML', default = 0 Lsun)
+### Observational parameters (appearing in line_obs.py)
 
 - **Tsys**: Instrument system temperature (Default = 40 K)
     
