@@ -96,16 +96,11 @@ class LineModel(object):
     model_par:      Dictionary containing the parameters of the chosen model
                     (Default = Parameters of Breysse et al. 2017 CO model)
                     
-    hmf_model:      Fitting function for the halo model using Pylians. 
-                    To choose among 'ST, 'Tinker',
-                    'Crocce', 'Jenkins', 'Warren', 'Watson', 'Watson_FOF',
-                    'Angulo'
-                    (Default: 'ST').
+    hmf_model:      Fitting function for the halo m to choose from those
+                    present in halo_mass_functions.py (default:'ST')
                     
-    bias_model:     Fitting function for the bias model.
-                    To choose among 'Mo96', 'Jing98', 'ST99', 'SMT01', 
-                    'Seljak04', 'Seljak04_cosmo', 'Mandelbaum05',
-                    'Tinker05', 'Tinker10', 'Manera10'
+    bias_model:     Fitting function for the bias model to choose from those
+                    present in bias_fitting_functions.py (default:'ST99')
                     
     bias_par:       A dictionary to pass non-standard values for the parameters
                     of each bias model
@@ -189,36 +184,61 @@ class LineModel(object):
                     
     <VID PARAMETERS>
     -----------------
+    
+    smooth_VID:     Bool. Whether to model or not extended observed profiles
+                    for the VID (default: True)
                     
     Tmin_VID:       Minimum temperature to compute the temperature PDF (default: 1e-2 uK)
     
     Tmax_VID:       Maximum temperature to compute the temperature PDF (default: 1e3 uK)
     
     nT:             Number of points in temperature to compute the PDF (default: 1e5)
-                    (If using do_fast_VID, may require a very high number)
-    
-    do_fast_VID:    Using FFTs to convolve the temperature PDF and compute the VID faster
-                    (Boolean, default: True)
-                    
-    Ngal_max:       Maximum value for the galaxies in a voxel (default: 100)
-    
+                        
     Nbin_hist:      Number of bins to compute the VID histogram from the PDF (default=101)
     
     subtract_VID_mean:  Remove the mean from the VID measurements (default=False)
     
     linear_VID_bin: Using a linear sampling for the VID bins in the histogram 
                     (Boolean, default=False, which results in log binning)
+
+    Lsmooth_tol:    Number of decimals for the tolerance of the ratio between
+                    the luminosity in a voxel and the maximum luminsity when 
+                    smooth_VID == True (Default: 7)
                     
-    do_sigma_G:     Compute the variance of galaxies in a voxel to get PofN
-                    according to the power spectrum. (Boolean, default=True)
+    T0_Nlogsigma:   Scale (log) for the T0 array for the lognormal temperature distribution
+                    to model the intrinsic scatter of luminosities (default: 4)
                     
-    sigma_G_input:  Value of the standard deviation of galaxy number in a voxel
-                    (Only relevant if do_sigma_G = False, default= 1.6)
+    fT0_min:        Minimum value for the Fourier conjugate of the temperature
+                    for the Fourier transform of the lognormal temperature distribution
+                    to model the intrinsic scatter of luminosities
+                    (default: 1e-5*u.uK**-1)
                     
-    dndL_Lcut:      Cut in the luminosity function (at low L) if computed from L(M), 
-                    useful for numerical performance if scatter is too big. 
-                    (Only relevant if model_type='ML', default = 0 Lsun)
+    fT0_max:        Maximum value for the Fourier conjugate of the temperature
+                    for the Fourier transform of the lognormal temperature distribution
+                    to model the intrinsic scatter of luminosities
+                    (default: 1e5*u.uK**-1)
                     
+    nfT0:           Number of points in the array of the Fourier conjugate of the temperature
+                    for the Fourier transform of the lognormal temperature distribution
+                    to model the intrinsic scatter of luminosities
+                    (default: 1000)
+                    
+    nT:             Number of points in the Temperature array for the PT
+                    (default: 2**18)
+    
+    n_leggauss_nodes_FT:    Number of nodes in the Legendre-Gauss quadrature
+                            for the NUFFTs. Can be an integer or a file with
+                            them already computed. (Default: ../nodes1e5.txt)
+                            
+    n_leggauss_nodes_IFT:   Number of nodes in the Legendre-Gauss quadrature
+                            for the backwards NUFFTs. Can be an integer or a file with
+                            them already computed. (Default: ../nodes1e4.txt)
+    
+    sigma_PT_stable:        Standard deviation of a dummy Gaussian to ensure 
+                            stability in the PT computation (especially for the
+                            clustering part) when there is no noise. 
+                            (default: 0.05*u.uK)
+
     DOCTESTS:
     >>> m = LineModel()
     >>> m.hubble
@@ -314,7 +334,7 @@ class LineModel(object):
                  nT=2**18,
                  n_leggauss_nodes_FT='../nodes1e5.txt',
                  n_leggauss_nodes_IFT='../nodes1e4.txt',
-                 sigmaT_control=0.05*u.uK):
+                 sigma_PT_stable=0.05*u.uK):
         
 
         # Get list of input values to check type and units
@@ -1895,7 +1915,7 @@ class LineModel(object):
         '''
         # ~ #Get nodes, weights, positions in Fourier space and imtervals for intensities
         fT = self.fT_and_edges[0]
-        exp_control = -fT**2*self.sigmaT_control**2/2.
+        exp_control = -fT**2*self.sigma_PT_stable**2/2.
         if self.subtract_VID_mean:
             exp_shift = 1j*fT*self.Tmean
         else:
@@ -2157,7 +2177,7 @@ class LineModel(object):
                       'Nbin_hist','subtract_VID_mean','linear_VID_bin',
                       'T0_Nlogsigma','fT0_min','fT0_max','nfT0',
                       'n_leggauss_nodes_FT','n_leggauss_nodes_IFT',
-                      'nfT_interval','nT_interval','sigmaT_control']
+                      'nfT_interval','nT_interval','sigma_PT_stable']
         
         # Clear cached properties so they can be updated. If only obs changes,
         #   only update cached obs and vid properties. If only vid changes,
