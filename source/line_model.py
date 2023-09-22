@@ -1959,7 +1959,6 @@ class LineModel(object):
         #inverse fourier transform computed piecewise-
         for ifT in range(nfT_interval):
             #prepare for the IFT
-            print(ifT)
             if ifT == nfT_interval-1:
                 fTmax = self.fT_max
             else:
@@ -1979,7 +1978,6 @@ class LineModel(object):
         PT = PT.real/np.pi/2*self.Tmean.unit**-1
         #check normalization
         nrm = np.trapz(PT,self.T)
-        print(PT,self.T)
         print('norm of PT is = ', nrm)
         if abs(nrm-1)>5e-2:
             print('PT not properly normalized.')
@@ -2024,7 +2022,6 @@ class LineModel(object):
         PT = PT.real/np.pi/2*self.Tmean.unit**-1
         #check normalization
         nrm = np.trapz(PT,self.T)
-        print(PT,self.T)
         print('norm of PT is = ', nrm)
         if abs(nrm-1)>5e-2:
             print('PT not properly normalized.')
