@@ -104,7 +104,7 @@ Here we briefly describe all the input parameters that can be set for lim, speci
 
 - **n_leggauss_nodes_IFT**: Number of nodes in the Legendre-Gauss quadrature for the backwards NUFFTs. Can be an integer or a file with them already computed. (Default: ../nodes1e4.txt)
 
-- **sigma_PT_stable**: Standard deviation of a dummy Gaussian to ensure stability in the PT computation (especially for the clustering part) when there is no noise.  (default: 0.05*u.uK)
+- **sigma_PT_stable**: Standard deviation of a dummy Gaussian to ensure stability in the PT computation (especially for the clustering part) when there is no noise.  (default: 0.0*u.uK)
                     
 ### Observational parameters (appearing in line_obs.py)
 

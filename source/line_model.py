@@ -237,7 +237,7 @@ class LineModel(object):
     sigma_PT_stable:        Standard deviation of a dummy Gaussian to ensure 
                             stability in the PT computation (especially for the
                             clustering part) when there is no noise. 
-                            (default: 0.05*u.uK)
+                            (default: 0.0*u.uK)
 
     DOCTESTS:
     >>> m = LineModel()
@@ -334,7 +334,7 @@ class LineModel(object):
                  nT=2**18,
                  n_leggauss_nodes_FT='../nodes1e5.txt',
                  n_leggauss_nodes_IFT='../nodes1e4.txt',
-                 sigma_PT_stable=0.05*u.uK):
+                 sigma_PT_stable=0.0*u.uK):
         
 
         # Get list of input values to check type and units
