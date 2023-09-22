@@ -1801,14 +1801,22 @@ class LineModel(object):
         Characteristic function of instrumental noise, assumed to be Gaussian
         '''
         fT = self.fT_and_edges[0]
-        return np.exp(-fT**2*self.sigma_N**2/2.)
+        if self.do_Jysr:
+            sigmaN = (self.sigma_N/np.sqrt(self.tpix*self.Nfeeds)).to(self.Tmean.unit)
+        else:
+            sigmaN = self.sigma_N
+        return np.exp(-fT**2*sigmaN**2/2.)
         
     @cached_vid_property
     def PT_N(self):
         '''
         Noise probability distribution
         '''
-        return np.exp(-self.T**2/(2*self.sigma_N**2))/np.sqrt(2*np.pi*self.sigma_N**2)
+        if self.do_Jysr:
+            sigmaN = (self.sigma_N/np.sqrt(self.tpix*self.Nfeeds)).to(self.Tmean.unit)
+        else:
+            sigmaN = self.sigma_N
+        return np.exp(-self.T**2/(2*sigmaN**2))/np.sqrt(2*np.pi*sigmaN**2)
         
     @cached_vid_property
     def Pvar(self):
@@ -1932,7 +1940,11 @@ class LineModel(object):
         '''
         # ~ #Get nodes, weights, positions in Fourier space and imtervals for intensities
         fT = self.fT_and_edges[0]
-        exp_noise = -fT**2*self.sigma_N**2/2.
+        if self.do_Jysr:
+            sigmaN = (self.sigma_N/np.sqrt(self.tpix*self.Nfeeds)).to(self.Tmean.unit)
+        else:
+            sigmaN = self.sigma_N
+        exp_noise = -fT**2*sigmaN**2/2.
         if self.subtract_VID_mean:
             exp_shift = 1j*fT*self.Tmean
         else:
@@ -2002,7 +2014,6 @@ class LineModel(object):
         #inverse fourier transform computed piecewise-
         for ifT in range(nfT_interval):
             #prepare for the IFT
-            print(ifT)
             if ifT == nfT_interval-1:
                 fTmax = self.fT_max
             else:
