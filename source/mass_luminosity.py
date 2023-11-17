@@ -359,7 +359,6 @@ def Chung_Lyalpha(self,Mvec,MLpar,z):
     except:
         pass
     
-    SFR = SFR.value
     fesc=(((1+np.exp(-xi*(z-z0)))**(-zeta))*(f0+((1-f0)/(1+(SFR/SFR0)**(psi)))))**2
     LLya=C*SFR*fesc
 
@@ -371,7 +370,7 @@ def KSrel(self,Mvec,MLpar,z):
     absorption term.
     L = K*SFR*10^{-Aext/2.5}
     Parameters:
-        K_Halpha     normalization between SFR and L -> With units!!
+        K_Halpha     normalization between SFR and L -> With L units!!
         Aext         Extinction
         SFR_file     file with SFR
     '''
@@ -405,7 +404,7 @@ def GongHalpha(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_Halpha = MLpar['K_Halpha']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
+    K_Halpha = MLpar['K_Halpha']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
     
@@ -436,7 +435,7 @@ def GongHbeta(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_Hbeta = MLpar['K_Hbeta']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
+    K_Hbeta = MLpar['K_Hbeta']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
     
@@ -467,7 +466,7 @@ def GongOIII(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_OIII = MLpar['K_OIII']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
+    K_OIII = MLpar['K_OIII']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
     
@@ -498,7 +497,7 @@ def GongOII(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_OII = MLpar['K_OII']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
+    K_OII = MLpar['K_OII']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
 
