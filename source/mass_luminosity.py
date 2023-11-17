@@ -332,6 +332,38 @@ def SilvaLyalpha_12(self,Mvec,MLpar,z):
     Lcont = (Lstellar+Lfreefree+Lfreebound+L2phot)*fLy*SFR/(u.Msun/u.yr)*(u.erg/u.s)
     
     return (Lrec+Lexc+Lcool+Lcont).to(u.Lsun)
+
+def Chung_Lyalpha(self,Mvec,MLpar,z):
+    '''
+    Model for Lyman-alpha line used in Chung+2019 (arXiv:1809.04550)
+    Model f esc and L dependent on SFR
+
+    Parameters:
+        SFR_file     file with SFR
+        -C      Conversion between SFR and Ly-alpha luminosity
+        -xi, zeta, psi, z0, f0, SFR0    Parametrize the escape fraction, 
+                                        reflecting the possibility of photons 
+                                        being absorbed by dust
+    '''
+    C,xi,zeta = MLpar['C'],MLpar['xi'],MLpar['zeta']
+    psi,z0,f0,SFR0 = MLpar['psi'],MLpar['z0'],MLpar['f0'],MLpar['SFR0']
+    SFR_file = MLpar['SFR_file']
+
+    SFR = get_SFR(Mvec,z,SFR_file)
+    #is there quenching?
+    try:
+        do_quench = ML['do_quench']
+        if do_quench:
+            fQint = process_fq()
+            SFR *= (1-fQint(np.log10(Mvec.value),1+z))
+    except:
+        pass
+    
+    SFR = SFR.value
+    fesc=(((1+np.exp(-xi*(z-z0)))**(-zeta))*(f0+((1-f0)/(1+(SFR/SFR0)**(psi)))))**2
+    LLya=C*SFR*fesc
+
+    return (LLya*u.erg/u.s).to(u.Lsun)
     
 def KSrel(self,Mvec,MLpar,z):
     '''
@@ -339,9 +371,9 @@ def KSrel(self,Mvec,MLpar,z):
     absorption term.
     L = K*SFR*10^{-Aext/2.5}
     Parameters:
-    K_Halpha     normalization between SFR and L -> With units!!
-    Aext         Extinction
-    SFR_file     file with SFR
+        K_Halpha     normalization between SFR and L -> With units!!
+        Aext         Extinction
+        SFR_file     file with SFR
     '''
     K = MLpar['K']
     Aext = MLpar['Aext']
