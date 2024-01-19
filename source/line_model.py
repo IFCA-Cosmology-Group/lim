@@ -1771,12 +1771,14 @@ class LineModel(object):
         (and indices for each limit interval)
         '''
         nodes,weights = self.leggaus_prep_IFT
-        #Have some fT edges log-spaced, the rest lin-space, keeping 3pi distance for nufft
+        #If needed, have some fT edges log-spaced, the rest lin-space, keeping 3pi distance for nufft
         Npi = 2
         self.Npi_fT = Npi
         #number of log bins
         dT = 2*self.Tmax_VID/self.nT
         fTlog_max = Npi*np.pi/dT
+        if fTlog_max.value > self.fT_max.value:
+            fTlog_max = self.fT_max
         dex_fTlog = int(np.ceil(np.log10(fTlog_max/self.fT_min)+10))
         fT_bins_log = np.logspace(np.log10(self.fT_min.value),np.log10(fTlog_max.value),dex_fTlog)*self.fT_min.unit
         #number of lin bins
@@ -1965,7 +1967,7 @@ class LineModel(object):
         T = self.T
         PT = np.zeros(self.nT,dtype='complex128')
         dT = 2*self.Tmax_VID/self.nT
-        Npi = int(fT[fT_Nind[NlogfT-1]]*dT/np.pi)
+        Npi = self.Npi_fT
         #create the nufft plan (type1)
         plan = finufft.Plan(1,(self.nT,),isign=1,eps=1e-6)
         #inverse fourier transform computed piecewise-
