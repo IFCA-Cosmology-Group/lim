@@ -370,7 +370,7 @@ def KSrel(self,Mvec,MLpar,z):
     absorption term.
     L = K*SFR*10^{-Aext/2.5}
     Parameters:
-        K_Halpha     normalization between SFR and L -> With L units!!
+        K_Halpha     normalization between SFR and L -> With units!!
         Aext         Extinction
         SFR_file     file with SFR
     '''
@@ -404,7 +404,7 @@ def GongHalpha(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_Halpha = MLpar['K_Halpha']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
+    K_Halpha = MLpar['K_Halpha']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
     
@@ -435,7 +435,7 @@ def GongHbeta(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_Hbeta = MLpar['K_Hbeta']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
+    K_Hbeta = MLpar['K_Hbeta']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
     
@@ -466,7 +466,7 @@ def GongOIII(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_OIII = MLpar['K_OIII']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
+    K_OIII = MLpar['K_OIII']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
     
@@ -497,7 +497,7 @@ def GongOII(self,Mvec,MLpar,z):
     Aext         Extinction
     SFR_file     file with SFR
     '''
-    K_OII = MLpar['K_OII']*1e41*u.erg/u.s#*(u.Msun/u.yr)**-1
+    K_OII = MLpar['K_OII']*1e41*u.erg/u.s*(u.Msun/u.yr)**-1
     Aext = MLpar['Aext']
     SFR_file = MLpar['SFR_file']
 
@@ -682,7 +682,7 @@ def SFR_Mz_2dinterp(M,z,SFR_file):
         for ii in range(0,logM.size):
             SFR[ii] = 10.**logSFR_interp(logM[ii],z[ii])
     else:
-        SFR = 10.**logSFR_interp(logM,z)
+        SFR = 10.**logSFR_interp(logM,z)*u.Msun/u.yr
     
     return SFR
     
@@ -781,7 +781,7 @@ def process_fq():
         names.append(files[inds[i]])
     
     for ia in range(len(a)):  
-        data = np.genfromtxt('tables/qf/'+names[ia])
+        data = np.genfromtxt(SFR_folder+'qf/'+names[ia])
         mat[:,ia] = data[:,1]
         
         
