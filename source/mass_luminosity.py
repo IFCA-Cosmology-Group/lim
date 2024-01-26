@@ -682,9 +682,9 @@ def SFR_Mz_2dinterp(M,z,SFR_file):
         for ii in range(0,logM.size):
             SFR[ii] = 10.**logSFR_interp(logM[ii],z[ii])
     else:
-        SFR = 10.**logSFR_interp(logM,z)*u.Msun/u.yr
+        SFR = 10.**logSFR_interp(logM,z)
     
-    return SFR
+    return SFR*u.Msun/u.yr
     
 
 def Silva_SFR(M,z,SFR_file):
