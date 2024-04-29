@@ -237,7 +237,7 @@ class LineModel(object):
     sigma_PT_stable:        Standard deviation of a dummy Gaussian to ensure 
                             stability in the PT computation (especially for the
                             clustering part) when there is no noise. 
-                            (default: 0.0*u.uK)
+                            (default: 0.05*u.uK)
 
     DOCTESTS:
     >>> m = LineModel()
@@ -334,7 +334,14 @@ class LineModel(object):
                  nT=2**18,
                  n_leggauss_nodes_FT='../nodes1e5.txt',
                  n_leggauss_nodes_IFT='../nodes1e4.txt',
-                 sigma_PT_stable=0.0*u.uK):
+                 sigma_PT_stable=0.05*u.uK,
+                 ############
+                 # BSM edit - add ncdm parameters
+                 ############
+                 do_ncdm=False,
+                 kcut=0.5/u.Mpc,
+                 slope=0.1
+                 ):
         
 
         # Get list of input values to check type and units
@@ -871,7 +878,135 @@ class LineModel(object):
         else:
             L = getattr(ml,self.model_name)(self,self.M,self.model_par,self.z)
         return L
-        
+
+    # BSM edit - define functions to calculate HMF correction for non-zero fnl, and define non-CDM transfer function
+    @cached_property
+    def S3_dS3(self):
+        '''
+        The skewness and derivative with respect to mass of the skewness. 
+        Used to calculate the correction to the HMF due to non-zero fnl, 
+        as presented in 2009.01245.
+
+        Their parameter k_cut is equivalent to our klim, not to be confused
+        with the ncdm parameter. k_lim represents the cutoff in the skewness 
+        integral, we opt for no cutoff and thus set it to a very small value.
+        This can be changed if necessary.
+        '''
+        rho_crit = 2.77536627e11*(self.Msunh*self.Mpch**-3).to(u.Msun*u.Mpc**-3) #Msun/Mpc^3
+        if self.cosmo_code == 'camb':
+            rhoM = rho_crit*(self.camb_pars.omegam-self.camb_pars.omeganu)
+            As = self.cosmo_input_camb['As']
+            ns = self.cosmo_input_camb['ns']
+            kpiv = self.cosmo_input_camb['pivot_scalar']*u.Mpc**-1
+        else: 
+            rhoM = rho_crit*(self.cosmo.Omega0_m()-self.cosmo.Omega_nu)
+            As = self.cosmo_input_class['A_s']
+            ns = self.cosmo_input_class['n_s']
+            kpiv = self.cosmo_input_class['k_pivot']*u.Mpc**-1
+
+        klim = 1.e-10 # has units 1/u.Mpc
+        k1 = np.logspace(np.log10(klim),2.698,128)*u.Mpc**-1
+        k2 = np.logspace(np.log10(klim),2.698,128)*u.Mpc**-1
+        phi = np.linspace(-0.995,0.995,128) #not -1,1 to avoid nans bc k1+k2=0 
+
+        k1_grid = np.meshgrid(k1,k2)[0]
+        k2_grid = np.meshgrid(k1,k2)[1]
+
+        S3 = np.zeros(self.nM)
+        dS3 = np.zeros(self.nM)
+
+        for iM in range(self.nM):
+            dummy_S3 = np.zeros(len(phi))
+            dummy_dS3 = np.zeros(len(phi))
+            for iphi in range(len(phi)):
+                k12_grid = np.sqrt(k1_grid**2+k2_grid**2+2*k1_grid*k2_grid*phi[iphi])
+                inds = np.where(k12_grid.value<=klim)
+                
+                R = (3.0*self.M[iM]/(4.0*np.pi*rhoM))**(1.0/3.0)
+                x = ((k1_grid*R).decompose()).value
+                W1 = 3.0*(np.sin(x) - x*np.cos(x))/(x)**3 
+                dW1 = (-9*np.sin(x) + 9*x*np.cos(x) + 3*(x**2)*np.sin(x))/((3*self.M[iM].value)*(x**3))
+                x = ((k2_grid*R).decompose()).value
+                W2 = 3.0*(np.sin(x) - x*np.cos(x))/(x)**3
+                dW2 = (-9*np.sin(x) + 9*x*np.cos(x) + 3*(x**2)*np.sin(x))/((3*self.M[iM].value)*(x**3))
+                x = ((k12_grid*R).decompose()).value
+                W12 = 3.0*(np.sin(x) - x*np.cos(x))/(x)**3
+                dW12 = (-9*np.sin(x) + 9*x*np.cos(x) + 3*(x**2)*np.sin(x))/((3*self.M[iM].value)*(x**3))
+                
+                dWs = (dW1*W2*W12 + W1*dW2*W12 + W1*W2*dW12)
+
+                T1 = (-5*self.transfer_m(k1_grid.value)*k1_grid.value**2)/3
+                T2 = (-5*self.transfer_m(k2_grid.value)*k2_grid.value**2)/3
+                T12 = (-5*self.transfer_m(k12_grid.value)*k12_grid.value**2)/3
+                P1 = (2*np.pi**2/k1_grid**3)*(9/25)*As*(k1_grid/kpiv)**(ns-1)
+                P2 = (2*np.pi**2/k2_grid**3)*(9/25)*As*(k2_grid/kpiv)**(ns-1)
+
+                integ_S3 = k1_grid**2*k2_grid**2*T1*T2*T12*W1*W2*W12*P1*P2
+                integ_S3[inds] = 0
+                dummy_temp_S3 = np.trapz(integ_S3,k1_grid,axis=1)
+                dummy_S3[iphi] = np.trapz(dummy_temp_S3,k2)
+
+                integ_dS3 = k1_grid**2*k2_grid**2*T1*T2*T12*dWs*P1*P2                    
+                integ_dS3[inds] = 0
+                dummy_temp_dS3 = np.trapz(integ_dS3,k1_grid,axis=1)
+                dummy_dS3[iphi] = np.trapz(dummy_temp_dS3,k2)
+                
+            S3[iM] = np.trapz(dummy_S3,phi)
+            dS3[iM] = np.trapz(dummy_dS3,phi)
+    
+        S3 *= self.f_NL*6/8/np.pi**4
+        dS3 *= self.f_NL*6/8/np.pi**4
+        return -S3, -dS3/u.Msun
+
+    @cached_property
+    def kappa3_dkappa3dM(self):
+        '''
+        Calculates kappa_3 its derivative with respect to halo mass M from 2009.01245
+        '''
+
+        S3, dS3_dM = self.S3_dS3
+
+        kappa3 = S3/(self.sigmaM**3)
+        dkappa3dM = (dS3_dM - 3*S3*self.dsigmaM_dM/self.sigmaM)/(self.sigmaM**3)
+
+        return kappa3, dkappa3dM
+    
+
+    @cached_property
+    def Delta_HMF(self):
+        '''
+        The correction to the HMF due to non-zero f_NL, as presented in 2009.01245.
+        '''
+        nuc = 1.42/self.sigmaM
+        dnuc_dM = -1.42*self.dsigmaM_dM/(self.sigmaM)**2
+        kappa3, dkappa3_dM = self.kappa3_dkappa3dM
+
+        H2nuc = nuc**2-1
+        H3nuc = nuc**3-3*nuc
+
+        F1pF0p = (kappa3*H3nuc - H2nuc*dkappa3_dM/dnuc_dM )/6
+
+        return F1pF0p
+    
+    # @cached_property
+    def transfer_ncdm(self,ncdmk):
+        '''
+        Transfer function to suppress small-scale power due to non-CDM models as presented in 2404.11609.
+        '''
+        if self.do_ncdm:
+            if self.f_NL != 0:
+                raise ValueError('Cannot have non-zero f_NL and non-CDM.')
+            else:
+                Tk = np.ones(len(ncdmk))
+                for i in range(len(ncdmk)):
+                    if ncdmk[i] > self.kcut:
+                        Tk[i] = (ncdmk[i]/self.kcut)**(-self.slope)
+                    else:
+                        Tk[i] = 1.0
+        else: 
+            Tk = np.ones(ncdmk.shape)             
+        return Tk
+    #        
         
     @cached_property
     def dndM(self):
@@ -888,7 +1023,15 @@ class LineModel(object):
         
         mf = getattr(HMF,self.hmf_model)(self,Mvec,rhoM)
         
-        return mf.to(u.Mpc**-3*u.Msun**-1)
+        # BSM edit - add HMF correction for non-zero fnl
+        #return mf.to(u.Mpc**-3*u.Msun**-1)
+        if self.f_NL == 0:
+            return mf.to(u.Mpc**-3*u.Msun**-1)
+        else:
+            if self.do_ncdm:
+                raise ValueError('Cannot have non-zero f_NL and non-CDM.')
+            else:
+                return mf.to(u.Mpc**-3*u.Msun**-1)*(1+self.Delta_HMF)        
         
         
     @cached_property
@@ -898,13 +1041,21 @@ class LineModel(object):
         '''
         #Get R(M) and P(k)
         rho_crit = 2.77536627e11*(self.Msunh*self.Mpch**-3).to(u.Msun*u.Mpc**-3) #Msun/Mpc^3
-        k = np.logspace(-2,2,128)*u.Mpc**-1
+        # BSM edit - change k range to match HMF correction
+        #k = np.logspace(-2,2,128)*u.Mpc**-1
+        if self.f_NL != 0: k = np.logspace(-3,3,128)*u.Mpc**-1
+        else: k = np.logspace(-2,2,128)*u.Mpc**-1
+        #
         #Use rho_m or rho_cb depending on mnu
         if self.cosmo_code == 'camb':
-            Pk = self.PKint(self.z,k.value)*u.Mpc**3
+            # BSM edit - add ncdm transfer function
+            Pk = (self.PKint(self.z,k.value)*u.Mpc**3 )*self.transfer_ncdm(k)
+            #
             rhoM = rho_crit*(self.camb_pars.omegam-self.camb_pars.omeganu)
         else:
-            Pk = self.PKint(k.value,np.array([self.z]),len(k),1,0)*u.Mpc**3
+            # BSM edit - add ncdm transfer function
+            Pk = (self.PKint(k.value,np.array([self.z]),len(k),1,0)*u.Mpc**3)*self.transfer_ncdm(k)
+            #
             rhoM = rho_crit*(self.cosmo.Omega0_m()-self.cosmo.Omega_nu)
 
         R = (3.0*self.M/(4.0*np.pi*rhoM))**(1.0/3.0)
@@ -922,7 +1073,7 @@ class LineModel(object):
         
         return sigma
         
-        
+
     @cached_cosmo_property
     def sigmaMz0(self):
         '''
@@ -933,10 +1084,14 @@ class LineModel(object):
         k = np.logspace(-2,2,128)*u.Mpc**-1
         #Use rho_m or rho_cb depending on mnu
         if self.cosmo_code == 'camb':
-            Pk = self.PKint(0.,k.value)*u.Mpc**3
+            # BSM edit - add ncdm transfer function
+            Pk = (self.PKint(0.,k.value)*u.Mpc**3)*self.transfer_ncdm(k)
+            #
             rhoM = rho_crit*(self.camb_pars.omegam-self.camb_pars.omeganu)
         else:
-            Pk = self.PKint(k.value,np.array([0.]),len(k),1,0)*u.Mpc**3
+            # BSM edit - add ncdm transfer function
+            Pk = (self.PKint(k.value,np.array([0.]),len(k),1,0)*u.Mpc**3)*self.transfer_ncdm(k)
+            #
             rhoM = rho_crit*(self.cosmo.Omega0_m()-self.cosmo.Omega_nu)
 
         R = (3.0*self.M/(4.0*np.pi*rhoM))**(1.0/3.0)
@@ -1202,11 +1357,15 @@ class LineModel(object):
         Matter power spectrum from the interpolator computed by camb. 
         '''
         if self.cosmo_code == 'camb':
-            return self.PKint(self.z,self.ki_grid.value)*u.Mpc**3
+            # BSM edit - add ncdm transfer function
+            T2k = np.tile(self.transfer_ncdm(self.k),(self.nmu,1))
+            return (self.PKint(self.z,self.ki_grid.value)*u.Mpc**3)*T2k
+            #
         else:
-            Pkvec = self.PKint(self.k.value,np.array([self.z]),self.nk,1,0)*u.Mpc**3
-            return np.tile(Pkvec,(self.nmu,1))
-                
+            # BSM edit - add ncdm transfer function
+            Pkvec = (self.PKint(self.k.value,np.array([self.z]),self.nk,1,0)*u.Mpc**3)*self.transfer_ncdm(self.k)
+            #
+            return np.tile(Pkvec,(self.nmu,1))         
     
     @cached_property
     def Lmean(self):
@@ -1771,14 +1930,12 @@ class LineModel(object):
         (and indices for each limit interval)
         '''
         nodes,weights = self.leggaus_prep_IFT
-        #If needed, have some fT edges log-spaced, the rest lin-space, keeping 3pi distance for nufft
+        #Have some fT edges log-spaced, the rest lin-space, keeping 3pi distance for nufft
         Npi = 2
         self.Npi_fT = Npi
         #number of log bins
         dT = 2*self.Tmax_VID/self.nT
         fTlog_max = Npi*np.pi/dT
-        if fTlog_max.value > self.fT_max.value:
-            fTlog_max = self.fT_max
         dex_fTlog = int(np.ceil(np.log10(fTlog_max/self.fT_min)+10))
         fT_bins_log = np.logspace(np.log10(self.fT_min.value),np.log10(fTlog_max.value),dex_fTlog)*self.fT_min.unit
         #number of lin bins
@@ -1804,22 +1961,22 @@ class LineModel(object):
         '''
         fT = self.fT_and_edges[0]
         if self.do_Jysr:
-            sigmaN = (self.sigma_N/np.sqrt(self.tpix*self.Nfeeds)).to(self.Tmean.unit)
-        else:
+            sigmaN = ( self.sigma_N/np.sqrt(self.tpix*self.Nfeeds) ).to(u.Jy/u.sr)
+        else: 
             sigmaN = self.sigma_N
         return np.exp(-fT**2*sigmaN**2/2.)
-        
+
     @cached_vid_property
     def PT_N(self):
         '''
         Noise probability distribution
         '''
         if self.do_Jysr:
-            sigmaN = (self.sigma_N/np.sqrt(self.tpix*self.Nfeeds)).to(self.Tmean.unit)
-        else:
+            sigmaN = ( self.sigma_N/np.sqrt(self.tpix*self.Nfeeds) ).to(u.Jy/u.sr)
+        else: 
             sigmaN = self.sigma_N
         return np.exp(-self.T**2/(2*sigmaN**2))/np.sqrt(2*np.pi*sigmaN**2)
-        
+
     @cached_vid_property
     def Pvar(self):
         '''
@@ -1859,12 +2016,26 @@ class LineModel(object):
                                                     var1=var, var2=var, hubble_units=False, 
                                                     k_hunit=False, return_z_k=False,
                                                     k_per_logint=None, log_interp=False, 
-                                                    extrap_kmax=True)  
-            Pm = PK.P(self.z,k.value)*u.Mpc**3
+                                                    extrap_kmax=True)
+            # BSM edit - add ncdm transfer function
+            #Pm = PK.P(self.z,k.value)*u.Mpc**3
+            T2kx = self.transfer_ncdm(kx)
+            T2ky = self.transfer_ncdm(ky)
+            T2kz = self.transfer_ncdm(kz)
+            T2k = T2kx[:,None,None]*T2ky[None,:,None]*T2kz[None,None,:]
+            Pm = (PK.P(self.z,k.value)*u.Mpc**3)*T2k
+            #
         else:
             #with class, we would have to recompute everything
-            Pm = self.PKint(self.z,k.value)*u.Mpc**3
-        
+            # BSM edit - add ncdm transfer function
+            #Pm = self.PKint(self.z,k.value)*u.Mpc**3
+            T2kx = self.transfer_ncdm(kx)
+            T2ky = self.transfer_ncdm(ky)
+            T2kz = self.transfer_ncdm(kz)
+            T2k = T2kx[:,None,None]*T2ky[None,:,None]*T2kz[None,None,:]
+            Pm = (self.PKint(self.z,k.value)*u.Mpc**3)*T2k
+            #
+
         rad_perp = self.sigma_perp/0.4247
         rad_par = self.sigma_par/0.4247
         kxr = (kx*rad_perp).decompose().value/2.
@@ -1943,10 +2114,11 @@ class LineModel(object):
         # ~ #Get nodes, weights, positions in Fourier space and imtervals for intensities
         fT = self.fT_and_edges[0]
         if self.do_Jysr:
-            sigmaN = (self.sigma_N/np.sqrt(self.tpix*self.Nfeeds)).to(self.Tmean.unit)
-        else:
+            sigmaN = ( self.sigma_N/np.sqrt(self.tpix*self.Nfeeds) ).to(u.Jy/u.sr)
+        else: 
             sigmaN = self.sigma_N
         exp_noise = -fT**2*sigmaN**2/2.
+        
         if self.subtract_VID_mean:
             exp_shift = 1j*fT*self.Tmean
         else:
@@ -1967,12 +2139,13 @@ class LineModel(object):
         T = self.T
         PT = np.zeros(self.nT,dtype='complex128')
         dT = 2*self.Tmax_VID/self.nT
-        Npi = self.Npi_fT
+        Npi = int(fT[fT_Nind[NlogfT-1]]*dT/np.pi)
         #create the nufft plan (type1)
         plan = finufft.Plan(1,(self.nT,),isign=1,eps=1e-6)
         #inverse fourier transform computed piecewise-
         for ifT in range(nfT_interval):
             #prepare for the IFT
+            print(ifT)
             if ifT == nfT_interval-1:
                 fTmax = self.fT_max
             else:
@@ -1992,6 +2165,7 @@ class LineModel(object):
         PT = PT.real/np.pi/2*self.Tmean.unit**-1
         #check normalization
         nrm = np.trapz(PT,self.T)
+        print(PT,self.T)
         print('norm of PT is = ', nrm)
         if abs(nrm-1)>5e-2:
             print('PT not properly normalized.')
@@ -2016,6 +2190,7 @@ class LineModel(object):
         #inverse fourier transform computed piecewise-
         for ifT in range(nfT_interval):
             #prepare for the IFT
+            # print(ifT)
             if ifT == nfT_interval-1:
                 fTmax = self.fT_max
             else:
@@ -2035,6 +2210,7 @@ class LineModel(object):
         PT = PT.real/np.pi/2*self.Tmean.unit**-1
         #check normalization
         nrm = np.trapz(PT,self.T)
+        #print(PT,self.T)
         print('norm of PT is = ', nrm)
         if abs(nrm-1)>5e-2:
             print('PT not properly normalized.')

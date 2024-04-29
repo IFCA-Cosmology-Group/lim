@@ -20,6 +20,39 @@ import astropy.constants as cu
 from scipy.interpolate import interp2d,interp1d
 import os 
 
+# VS 2023
+def COMAP_Fid_log(self,Mvec,MLpar,z):
+    '''
+    New COMAP fiducial double-power law model
+    L(M) = C/((M/Ms)^A+(M/Ms)^B)
+    
+    Parameters:
+    A   Low-mass slope
+    B   High-mass slope
+    C   Overall normalization
+    Ms  Turnover mass
+    
+    Predicted values for (A, B, log C, log (Ms/Msol), sigma):
+    * pessimistic: (-3.7, 7.0, 11.1, 12.5, 0.36)
+    * realistic: (-2.75, 0.05, 10.61, 12.3, 0.42)
+    * realistic-plus: (-2.85, -0.42, 10.63, 12.3, 0.42)
+    * optimistic: (-2.4, -0.5, 10.45, 12.21, 0.36))
+
+    VS: adjusted input parameters to support log-scaling on C and Ms
+    '''
+    
+    A = MLpar['A']
+    B = MLpar['B']
+    logC = MLpar['logC']
+    C = 10**logC
+    logMs = MLpar['logMs']
+    Ms = (10**logMs)*u.Msun
+    
+    L = C/((Mvec/Ms)**A+(Mvec/Ms)**B)
+    return L*4.9e-5*u.Lsun*(self.nu/(115.27*u.GHz))**3
+#
+
+
 def MassPow(self,Mvec, MLpar, z):
     """
     Power law L(M)/L_sun = A*(M/M_sun)^b (See Breysse et al. 2015)
@@ -332,64 +365,7 @@ def SilvaLyalpha_12(self,Mvec,MLpar,z):
     Lcont = (Lstellar+Lfreefree+Lfreebound+L2phot)*fLy*SFR/(u.Msun/u.yr)*(u.erg/u.s)
     
     return (Lrec+Lexc+Lcool+Lcont).to(u.Lsun)
-
-def Chung_Lyalpha(self,Mvec,MLpar,z):
-    '''
-    Model for Lyman-alpha line used in Chung+2019 (arXiv:1809.04550)
-    Model f esc and L dependent on SFR
-
-    Parameters:
-        SFR_file     file with SFR
-        -C      Conversion between SFR and Ly-alpha luminosity
-        -xi, zeta, psi, z0, f0, SFR0    Parametrize the escape fraction, 
-                                        reflecting the possibility of photons 
-                                        being absorbed by dust
-    '''
-    C,xi,zeta = MLpar['C'],MLpar['xi'],MLpar['zeta']
-    psi,z0,f0,SFR0 = MLpar['psi'],MLpar['z0'],MLpar['f0'],MLpar['SFR0']
-    SFR_file = MLpar['SFR_file']
-
-    SFR = get_SFR(Mvec,z,SFR_file)
-    #is there quenching?
-    try:
-        do_quench = ML['do_quench']
-        if do_quench:
-            fQint = process_fq()
-            SFR *= (1-fQint(np.log10(Mvec.value),1+z))
-    except:
-        pass
     
-    fesc=(((1+np.exp(-xi*(z-z0)))**(-zeta))*(f0+((1-f0)/(1+(SFR/SFR0)**(psi)))))**2
-    LLya=C*SFR*fesc
-
-    return (LLya*u.erg/u.s).to(u.Lsun)
-    
-def KSrel(self,Mvec,MLpar,z):
-    '''
-    Uses the Kennicutt-Schmidt relation: linear with SFR, adding an
-    absorption term.
-    L = K*SFR*10^{-Aext/2.5}
-    Parameters:
-        K_Halpha     normalization between SFR and L -> With units!!
-        Aext         Extinction
-        SFR_file     file with SFR
-    '''
-    K = MLpar['K']
-    Aext = MLpar['Aext']
-    SFR_file = MLpar['SFR_file']
-    
-    SFR = get_SFR(Mvec,z,SFR_file)
-    #is there quenching?
-    try:
-        do_quench = ML['do_quench']
-        if do_quench:
-            fQint = process_fq()
-            SFR *= (1-fQint(np.log10(Mvec.value),1+z))
-    except:
-        pass
-            
-    L = SFR*K*10**(-Aext/2.5)
-    return L.to(u.Lsun)
 
 def GongHalpha(self,Mvec,MLpar,z):
     '''
@@ -684,7 +660,7 @@ def SFR_Mz_2dinterp(M,z,SFR_file):
     else:
         SFR = 10.**logSFR_interp(logM,z)
     
-    return SFR*u.Msun/u.yr
+    return SFR
     
 
 def Silva_SFR(M,z,SFR_file):
@@ -781,7 +757,7 @@ def process_fq():
         names.append(files[inds[i]])
     
     for ia in range(len(a)):  
-        data = np.genfromtxt(SFR_folder+'qf/'+names[ia])
+        data = np.genfromtxt('tables/qf/'+names[ia])
         mat[:,ia] = data[:,1]
         
         
