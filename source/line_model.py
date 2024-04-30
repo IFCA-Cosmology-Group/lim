@@ -993,18 +993,23 @@ class LineModel(object):
         '''
         Transfer function to suppress small-scale power due to non-CDM models as presented in 2404.11609.
         '''
+
+        # make sure k's are in the proper units
+
+        k_cut = self.kcut.to(1./u.Mpc).value
+        k = ncdmk.to(1./u.Mpc).value
+
         if self.do_ncdm:
             if self.f_NL != 0:
                 raise ValueError('Cannot have non-zero f_NL and non-CDM.')
             else:
-                Tk = np.ones(len(ncdmk))
-                for i in range(len(ncdmk)):
-                    if ncdmk[i] > self.kcut:
-                        Tk[i] = (ncdmk[i]/self.kcut)**(-self.slope)
-                    else:
-                        Tk[i] = 1.0
-        else: 
-            Tk = np.ones(ncdmk.shape)             
+                # Initialize Tk with ones of the same shape as ncdmk
+                Tk = np.ones_like(k)
+                # Apply the transfer function conditionally
+                mask = k > k_cut
+                Tk[mask] = (k[mask] / k_cut) ** (-self.slope)
+        else:
+            Tk = np.ones_like(k)
         return Tk
     #        
         
@@ -2019,20 +2024,14 @@ class LineModel(object):
                                                     extrap_kmax=True)
             # BSM edit - add ncdm transfer function
             #Pm = PK.P(self.z,k.value)*u.Mpc**3
-            T2kx = self.transfer_ncdm(kx)
-            T2ky = self.transfer_ncdm(ky)
-            T2kz = self.transfer_ncdm(kz)
-            T2k = T2kx[:,None,None]*T2ky[None,:,None]*T2kz[None,None,:]
+            T2k = self.transfer_ncdm(k)
             Pm = (PK.P(self.z,k.value)*u.Mpc**3)*T2k
             #
         else:
             #with class, we would have to recompute everything
             # BSM edit - add ncdm transfer function
             #Pm = self.PKint(self.z,k.value)*u.Mpc**3
-            T2kx = self.transfer_ncdm(kx)
-            T2ky = self.transfer_ncdm(ky)
-            T2kz = self.transfer_ncdm(kz)
-            T2k = T2kx[:,None,None]*T2ky[None,:,None]*T2kz[None,None,:]
+            T2k = self.transfer_ncdm(k)
             Pm = (self.PKint(self.z,k.value)*u.Mpc**3)*T2k
             #
 
