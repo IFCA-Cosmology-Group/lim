@@ -1,3 +1,9 @@
+# Modified lim to support BSM models
+
+Contributors: Vivian Sabla
+
+Modified lim to support phenomenological suppression of matter-power due to non-cold dark matter and added a correction on the halo-mass function due to non-gaussianity. 
+
 # lim
 
 lim is a python application designed to analytically compute various statistics of line intensity maps using a wide variety of models.  It also contains functions to generate simulated intensity maps from peak-patch simulations provided by George Stein.  This code is a work in progress, so it may change significantly and there may be undetected bugs.

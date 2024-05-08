@@ -110,6 +110,8 @@ def get_default_params(func):
     "self" argument it is removed from the dictionary.
     '''
     
+    # VS 2023
+    #args = inspect.getargspec(func)
     args = inspect.getfullargspec(func)
     
     param_names = args.args
