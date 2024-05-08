@@ -1,16 +1,23 @@
-# Modified lim to support BSM models
-
-Contributors: Vivian Sabla
-
 Modified lim to support phenomenological suppression of matter-power due to non-cold dark matter and added a correction on the halo-mass function due to non-gaussianity. 
 
 # lim
+
+Contributors: José Luis Bernal, Patrick Breysse, Vivian Sabla
 
 lim is a python application designed to analytically compute various statistics of line intensity maps using a wide variety of models.  It also contains functions to generate simulated intensity maps from peak-patch simulations provided by George Stein.  This code is a work in progress, so it may change significantly and there may be undetected bugs.
 
 Due to being a live code, there may be updates without annoucement as a new release, unless something really big changes. Please make sure to update the code regularly in case eventual bug have been fixed / calculations have been improved
 
 ### Changes from previous versions
+
+- Added modeling of phenomenological suppression of matter-power spectrum due to non-cold dark matter and added a correction on the halo-mass function due to primordial non-gaussianity of the local type. (following arXiv:2404.11609)
+- Added new examples with the new set of input parameters to reproduce the results from arXiv:2404.11609
+  
+-----------------------------
+
+- Improved modeling of the VID (and much faster computation) matching arXiv:2309.06481 (many VID-related parameters have changed)
+  
+----------------------------
 
 - Included convolution with survey volume (assumed cylindrical)
 
