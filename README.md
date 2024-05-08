@@ -1,4 +1,3 @@
-Modified lim to support phenomenological suppression of matter-power due to non-cold dark matter and added a correction on the halo-mass function due to non-gaussianity. 
 
 # lim
 
